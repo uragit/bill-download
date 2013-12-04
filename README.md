@@ -11,7 +11,10 @@ General notes:
 
 Websites for which this project has working programs for downloading bills:
 
-  comcast.com: (Cable ISP in SF Bay)
+comcast.com: (Cable ISP in SF Bay)
+------------
+
     comcast_watir.rb
     comcast.conf
+
     Make sure you have ruby, with the watir (`http://watir.com`) drivers.  A working chrome brower setup is needed.  Edit comcast.conf with your credentials and location of download directory.  Run comcast_watir.rb and have at it.
