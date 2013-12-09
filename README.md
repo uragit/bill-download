@@ -58,7 +58,7 @@ directory.  Run comcast_watir.rb and have at it.
 
 
 callcentric.com: (USA VOIP provider)
-------------
+---------------
 
 callcentric_watir.rb
 
@@ -67,4 +67,23 @@ callcentric.conf
 Make sure you have ruby, with the watir (`http://watir.com`) drivers.  A working chrome 
 brower setup is needed.  Edit callcentric.conf with your credentials and location of download 
 directory.  Run callcentric_watir.rb and have at it.
+
+
+
+att.com (AT&T USA telco)
+-------
+
+att_phone_watir.rb
+
+att.conf
+
+Make sure you have ruby, with the watir (`http://watir.com`) drivers.
+A working chrome brower setup is needed.  Edit callcentric.conf with
+your credentials and location of download directory.  Run
+callcentric_watir.rb and have at it.
+
+This script works for landline phones only.  It might also work for
+mobile phones too but hasn't been tested.  It downloads bill pdfs,
+bill html, and usage records, based on the billed data (as a csv
+file).
 
