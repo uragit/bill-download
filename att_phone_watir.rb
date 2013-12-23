@@ -1,6 +1,7 @@
 #!/usr/bin/ruby
 # att_phone_watir.rb -- Downloads monthly statements from att.com, for a single home phone account.
 
+
 # Disclaimer:
 #   This code worked for me, at least once, on a particular account on
 #   a particular computer.   Maybe it will work for you.  If not, then
@@ -16,15 +17,51 @@
 #   there's a good chance that AT&T has got your account on a different
 #   system from mine.
 
+
+# Note:
+#
+# As a rough standard for my collection of screen-scraping, csv-saving CDR files
+# this is the plan for the csv files.
+#
+#   n, the nth call in this
+#   date_time, start time of call (iso.8601, with timezone)
+#   Calling TN (Can be tricky depending on info we can figure out)
+#   Called TN  (Can be tricky depending on info we can figure out)
+#   Call duration (in seconds)
+#   amount       (In $dollars.cents, so tax can be a fraction if needed.)
+#   tax          (In $dollars.cents, so tax can be a fraction if needed.)
+#   total_amount (In $dollars.cents, so tax can be a fraction if needed.)
+#   Rate type (RM45, or whatever the heck)
+#   Call status (completed, for example, or whatever the heck)
+#   Call type (voice, SMS, etc)
+#   Billed TN
+#   Location (Could be to or from, depending on call in or out of the number we own)
+
+
+
 require 'rubygems'
 require 'watir-webdriver'
 require 'getoptlong'
 require 'time'
+require 'fileutils'
 
+# Default location for config file.
 config_filename='./att.conf'
 
 ####################################
 ####################################
+
+# Normally the command-line options are read after the config file
+# so the command-line options can override the config file settings.
+# Except for the '--config filename' setting which we'll need to know
+# now.
+
+ARGV.each_with_index { |arg, i|
+  if ( (arg=='--config') || (arg=='-c') )
+    config_filename=ARGV[i+1]
+  end
+}
+
 
 cfg={}
 begin
@@ -49,109 +86,161 @@ rescue => err
   err
 end
 
-username=cfg['username']
-password=cfg['password']
-passcode=cfg['passcode']
-
-# Passcode is optional, unless needed for login, then it will fall over at login failure.
-if (username.nil? || password.nil?)
-  puts "Can't get login credentials from config file."
-  exit
-end
-
-
 # Where we're going to collect all the downloaded, renamed files.
 destdir=cfg['destdir'].nil? ? "downloads/att" : cfg['destdir']
 
 # Where to stash temporary files.  (Note: we'll also append the PID)
 tempdir=cfg['tempdir'].nil? ? "downloads/tmp" : cfg['tempdir']
-tempdir=tempdir+"."+Process.pid.to_s
+
+username=cfg['username']
+password=cfg['password']
+passcode=cfg['passcode']
+# Passcode is optional, unless needed for login, then it will fall over at login failure.
+
+# In which timezone do you want times interpreted?
+tz=cfg['tz'].nil? ? 'PST8PDT' : cfg['tz']
+# If it ends up blank, US times will be be interpeted as machine local time.
 
 # What to do at run time.
 download_bills_pdf=cfg['download_bills_pdf'].nil? ? 1 : cfg['download_bills_pdf'].to_i
 download_bills_html=cfg['download_bills_html'].nil? ? 1 : cfg['download_bills_html'].to_i
 download_usage=cfg['download_usage'].nil? ? 1 : cfg['download_usage'].to_i
 
-# In which timezone do you want times interpreted?
-tz=cfg['tz'].nil? ? 'PST8PDT' : cfg['tz']
-
-# Probably better to pull these from the webpage itself.
-phone_number=cfg['phone_number']
 
 ####################################
 ####################################
 
 progname=File.basename($0)
 
-opts=GetoptLong.new(
-                    ["--help", "-h", GetoptLong::NO_ARGUMENT],
-                    ["--destdir", "-d", GetoptLong::REQUIRED_ARGUMENT],
-                    ["--tempdir", "-t", GetoptLong::REQUIRED_ARGUMENT]
+begin
+  # Command-line options, will override settings in config file.
+
+  def printusage()
+    puts 
+    puts "Usage: #{$0} [options]"
+    puts "Options:" 
+    puts "  --config filename    (configuration file with key=value pairs"
+    puts "  --destdir directory  (for final destination of downloading)"
+    puts "  --tempdir directory  (for temporary staging)"
+    puts "  --username username  (safer to specify in config file)"
+    puts "  --password password  (safer to specify in config file)"
+    puts "  --passcode passcode  (if needed for login)"
+    puts "  --tz timezone        (Timezone for interpreting usage timestamps, default PST8PDT)"
+    puts "  --download_bills_pdf"
+    puts "  --download_bills_html"
+    puts "  --download_usage"
+    exit(1)
+  end
+
+  opts=GetoptLong.new(
+                      ["--help",     "-h",      GetoptLong::NO_ARGUMENT],
+                      ["--config",   "-c",      GetoptLong::OPTIONAL_ARGUMENT],
+                      ["--destdir",  "-d",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--tempdir",  "-z",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--username", "-u",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--password", "-p",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--passcode",            GetoptLong::REQUIRED_ARGUMENT],
+                      ["--timezone",            GetoptLong::REQUIRED_ARGUMENT],
+                      ["--download_bills_pdf",  GetoptLong::NO_ARGUMENT],
+                      ["--download_bills_html", GetoptLong::NO_ARGUMENT],
+                      ["--download_usage",      GetoptLong::NO_ARGUMENT]
                     )
 
-opts.each { |option, value|
-		case option
-		when "--help"
-                  puts "Usage: use it right"
-                  exit
-		when "--destdir"
-                  destdir = value
-		when "--tempdir"
-                  tempdir = value
-		end
-}
-#   rescue => err
-#         puts "#{err.class()}: #{err.message}"
-#         puts "Usage: -h -u -i -s filename"
-#         exit
- 
+  opts.each { |option, value|
+    case option
+    when "--help"
+      printusage()
+    when "--destdir"
+      destdir = value
+    when "--config"
+      # Nothing to do.  Handled earlier.
+    when "--tempdir"
+      tempdir = value
+    when "--username"
+      username = value
+    when "--password"
+      password = value
+    when "--passcode"
+      passcode = value
+    when "--timezone"
+      timezone = value
+    when "--download_bills_pdf"
+      download_bills_pdf = 1
+    when "--download_bills_html"
+      download_bills_html = 1
+    when "--download_usage"
+      download_usage = 1
+    else
+      puts "Hmmm: option='#{option}'  value='#{value}'"
+    end
+  }
+  if ARGV.length !=0
+    ARGV.each { |arg|
+      puts "Extra arg supplied: '#{arg}'"
+    }
+    printusage()  # Will exit
+  end
 
-#puts "Destdir =#{destdir}"
-#puts "Tempdir =#{tempdir}"
-
-
+rescue => err
+  puts "#{err.class()}: #{err.message}"
+  printusage()  # Will exit
+end
 
 ####################################
 ####################################
 
+# Sanity check some of the args from config file and/or command line.
 
-puts progname+' starting'
-
-
-
-if (! File.directory?(destdir))
-  puts "Can't find temporary directory ("+destdir+").  Exiting.  Perhaps you're running in the wrong directory."
+if (username.nil? || password.nil?)
+  puts "Can't get login credentials from config file."
   exit
 end
+
+# Add PID to tempdir pathname.
+tempdir=tempdir+"."+Process.pid.to_s
+
+if (! File.directory?(destdir))
+  puts "Can't find destination directory (#{destdir}).  Exiting.  Perhaps you're running in the wrong directory."
+  exit
+end
+
+####################################
+####################################
+
+
+summary=""
+
+start_time=Time.now
+puts       "#{progname} starting: #{start_time}"
+summary += "#{progname} started:  #{start_time}\n"
 
 
 
 # Let's collect all the files we've already got downloaded (or scanned)
 #
-existing_pdfs={};
-existing_htmls={};
-existing_csvs={};
-filename_map={};
+existing_files={};
+file_rename_lookup={}
 #
 puts 'Listing existing files in download directory:'
 Dir.foreach(destdir) { |filename|
-  # Combine all three types into a single one with merged key.????????????
-  if    (filename =~ /^att_phone_statement.(\d+).d(\d+).pdf$/) 
+  if    (filename =~ /^att_phone_statement.(\d+).d(\d+)_(\d+).(pdf|html)$/) 
     puts '  Filename: '+filename
     phone_number_key=Regexp.last_match[1]
-    date_key=Regexp.last_match[2]
-    key=phone_number_key+'.'+date_key
-    existing_pdfs[key]=1
-  elsif    (filename =~ /^att_phone_statement.(\d+).d(\d+).html$/) 
+    date_from_key=Regexp.last_match[2]
+    date_to_key=Regexp.last_match[3]
+    type_key=Regexp.last_match[4]
+    key=phone_number_key+'.'+date_to_key+'.'+type_key
+    existing_files[key]=1
+  elsif    (filename =~ /^att_phone_statement.(\d+).d(\d+)_(\d+).(voice|text|data)_usage.csv$/) 
     puts '  Filename: '+filename
     phone_number_key=Regexp.last_match[1]
-    date_key=Regexp.last_match[2]
-    existing_htmls[phone_number_key+'.'+date_key]=1
-  elsif    (filename =~ /^att_phone_statement.(\d+).d(\d+).csv$/) 
-    puts '  Filename: '+filename
-    phone_number_key=Regexp.last_match[1]
-    date_key=Regexp.last_match[2]
-    existing_csvs[phone_number_key+'.'+date_key]=1
+    date_from_key=Regexp.last_match[2]
+    date_to_key=Regexp.last_match[3]
+    type_key=Regexp.last_match[4]
+    existing_files[phone_number_key+'.'+date_to_key+'.'+type_key+'_usage.csv']=1
+  elsif    ( (filename =~ /^\.$/) || (filename =~ /^\.\.$/) )
+  else
+    puts '  Filename (unknown type): '+filename
   end
 } 
 downloaded_files=0
@@ -161,12 +250,12 @@ puts 'Place for temp files: '+tempdir
 
 if (File.directory?(tempdir))
   puts "  Directory exists."
+elsif (File.file?(tempdir))
+  puts "  Can't use directory (tempdir).  It's a regular file."
 else
   puts "  Directory ("+tempdir+") does not exist.  Creating."
   Dir.mkdir(tempdir)
-  # ???????? Fail on errors (if a regular file already exists with the name, etc)
 end
-
 
 
 
@@ -175,8 +264,6 @@ end
 ##
 profile = Selenium::WebDriver::Chrome::Profile.new
 profile['download.prompt_for_download'] = false
-# No idea if the next line will work.
-profile['content_settings.pattern_pairs.*,*.multiple-automatic-downloads'] = 1
 profile['download.default_directory'] = tempdir
 ##
 ##profile = Selenium::WebDriver::Firefox::Profile.new
@@ -192,30 +279,6 @@ browser = Watir::Browser.new :chrome, :profile => profile
 mycontainer = Watir::Container
 
 
-# To disable the retarded "This site is attempting to download multiple files" problem.
-# Try some of these options.  But I don't know how they relate to ruby/watir.
-
-#chrome options: { "profile.content_settings.pattern_pairs.,.multiple-automatic-downloads", 1 }
-
-#options.prefs = new Dictionary<string, object>
-#{
-#	{ "profile.content_settings.pattern_pairs.*.multiple-automatic-downloads", 1 }
-#};
-
-# Here's an actual code fragment.  See attempt above to make it work.
-# case Browser.Chrome:
-#   var options = new ChromeOptionsWithPrefs();
-#   options.AddArguments("start-maximized");
-#   options.AddArguments("disable-extensions");
-#   options.prefs = new Dictionary<string, object>
-#     {
-#       { "download.default_directory", resultPath },
-#       { "download.directory_upgrade", true },
-#       { "download.prompt_for_download", true },
-#       { "profile.content_settings.pattern_pairs.*,*.multiple-automatic-downloads", 1 }
-#     };
-
-
 
 # The view links execute something like this:
 #    <a href="javascript:void(0);" class="wt_Body" desturl="/view/viewfullbillPDF.doview" onclick="window.open('/view/viewfullbillPDF.doview?stmtID=20120605|7753295648280|S|P&amp;reportActionEvent=A_VB_VIEW_FULL_BILL_PDF_LINK', 'viewpdf', config='height=600, width=800, toolbar=no, menubar=yes, scrollbars=yes, resizable=yes, location=no, directories=no, status=no'); return false;">PDF</a>
@@ -225,10 +288,8 @@ mycontainer = Watir::Container
 # URL and explicitly ask for the PDF files.   Anyway, probably can't test it
 # now because I hit the "allow" button, and it probably remembers.
 #
-# Oh, that's okay, stewardess, I speak 'tard.
-
-
-
+# Oh, that's okay, stewardess, I speak 'tard.   Workaround by kludging a direct
+# url instead of clicking on their javascript-laden buttons.
 
 
 def disable_pdf_plugin(browser)
@@ -244,147 +305,347 @@ end
 
 disable_pdf_plugin(browser)
 
+###############################
+###############################
+
+
 
 # Window activity seems to trigger some confusing javascript which breaks the login.
-puts "Don't resize window before login!" 
+puts "Don't resize browser window before login!  (Bad juju!)" 
 
-browser.goto 'https://www.att.com/olam/loginAction.olamexecute'
+logging_in=true
+attempts=0
+while (logging_in)
+  attempts += 1
+  if (attempts > 3)
+    puts "Too many login failures."
+    exit
+  end
 
-browser.text_field(:name, 'userid').set username
-login_button=browser.input(:title, 'Login')
-login_button.click
-sleep(1)
-browser.text_field(:id, 'password').set password
-sleep(1)
-#
-# Seems to need two of these.  This combo works.  Others don't.  Some others might.
-#login_button.click
-browser.input(:title, 'Login').click
-#browser.input(:class, 'MarTop10').click
+  puts "Attempt #{attempts} at logging in.  Going to login screen."
 
-if (passcode != '')
-  # If we have a passcode, we assume it's because it's asked for here.
+  browser.goto 'https://www.att.com/olam/loginAction.olamexecute'
 
-  browser.text_field(:id, 'passcode').set passcode
-  browser.input(:id, 'bt_continue').click
+  sleep(1)
+  puts "Filling in username/password."
+  browser.text_field(:name, 'userid').set username
+  login_button=browser.input(:title, 'Login')
+  #puts "Clicking on login button."
+  #login_button.click
+  sleep(1)
+  browser.text_field(:id, 'password').set password
+  sleep(1)
+  #
+  # Seems to need two of these.  This combo works.  Others don't.  Some others might.
+  #login_button.click
+  browser.input(:title, 'Login').click
+  #browser.input(:class, 'MarTop10').click
+
+
+  # Due to asshattery they sometimes (ie randomly) pop up a feedback request form, yes before
+  # they even get the passcode entered.   We try to check that here.
+  if (browser.link(:class, 'fsrDeclineButton').exists?)
+    # Click the "No, thanks" button.
+    puts "Seems to be a stupid feedback splash presented.  Clicking 'No thanks'."
+    browser.link(:class, 'fsrDeclineButton').click
+  end
+
+  begin
+    if (browser.text_field(:id, 'passcode').exists?)
+      if (passcode != '')
+        puts "Passcode requested.  Attempting to set passcode."
+        browser.text_field(:id, 'passcode').set passcode
+        browser.input(:id, 'bt_continue').click
+      else
+        puts "Passcode needed but not supplied."
+        exit
+      end
+    else
+      puts "No passcode request screen."
+    end
+  rescue
+    puts "Well, passcode entry didn't work.  Probably muppetry with a survey overlay."
+  end
+
+  sleep(1)  # Maybe it needs to settle.
+
+  # Due to asshattery they sometimes (ie randomly) pop up a feedback request form, yes before
+  # they even get the passcode entered.   We try to check that here.
+  if (browser.link(:class, 'fsrDeclineButton').exists?)
+    # Click the "No, thanks" button.
+    puts "Seems to be a stupid feedback splash presented.  Clicking 'No thanks'."
+    browser.link(:class, 'fsrDeclineButton').click
+  end
+
+  # If it's not asking for a password, we assume we're in.
+  if (not browser.text_field(:id, 'password').exists?)
+    puts "Can't see a password prompt; assuming login success."
+    logging_in=false
+  end
+
 end
 
-sleep(2)
+summary += "Successful login.\n"
+
+
+if (browser.link(:name, "MyATT_Wireless Services").exists?)
+  landline=false
+  puts "Looks like it's a wireless account."
+else
+  landline=true
+  puts "Looks like it's a landline account."
+end
+
+
+if (not landline)
+  # Grab this from the overview.
+  #  Phone number: 'Marmaduke  555-666-3264'
+  browser.goto 'https://www.att.com/olam/passthroughAction.myworld?actionType=Manage&gnLinkId=s1001'
+  phone_number=browser.div(:class, 'minHt75 PadTop5 MarRight20').h4().text.split(/\s+/).last.gsub(/\D/,'')
+  puts "Phone number: '#{phone_number}'"
+  # For wireless, could probably just use the login username, in fact it might make more sense.
+end
 
 # Pull up a table of billing history (same for landline or mobile)
 puts "Going to 'Billing history' page"
-browser.goto 'https://www.att.com/olam/passthroughAction.myworld?actionType=ViewBillHistory&gnLinkId=t1004'
+if (landline)
+  browser.goto 'https://www.att.com/olam/passthroughAction.myworld?actionType=ViewBillHistory&gnLinkId=t1004'
+else
+  browser.goto 'https://www.att.com/olam/passthroughAction.myworld?actionType=ViewBillHistory&gnLinkId=t1007'
+end
 sleep(2)
 
 
 # Grab the account number from the web page.
-account_number=browser.div(:id, 'landing').li(:class, 'account-number').text
-# ?????????? If this line screws up, you probably didn't login.  Go back and try again.
-# ??????????? Catch the actual occurrence and figure what to look for.
+if (landline)
+  account_number=browser.div(:id, 'landing').li(:class, 'account-number').text
+else
+  account_number=browser.div(:class, 'w436imp PayAllLineitems float-left').p.text.split(/\s+/)[1]
+  # <p class="colorGrey font12 botMar3 ">Account: 284372643055</p>
+end
 
-
-phone_number=account_number[0..9]
+if (landline)
+  phone_number=account_number[0..9]
+end
 puts "account_number='#{account_number}', phone_number='#{phone_number}'  "
+
+puts "account_number='#{account_number}', phone_number='#{phone_number}'  "
+summary += "Phone number: #{phone_number}\n"
+
+
+if (not landline)
+  # There's an annoying radiobox to select between display formats for list of bills
+  # but in fact the html for both types exists, even if they don't both display.
+  # Should probably make it display just for easier debugging, ie at least anybody
+  # watching the browser can see what the code is seeing.
+  browser.radio(:id, 'Table-View').set
+end
 
 
 puts "Processing lines in billing history table:"
-i=0
 statement_url_list=[]
-mytable=browser.table(:class, 'table tableNoPad')
-mytable.rows.each {
-  |r|
-  i += 1
+statement_date_list=[]
+if (landline)
+  mytable=browser.table(:class, 'table tableNoPad')
+else
+  mytable=browser.div(:id, 'tableView').table()
+end
+#
+statement_count=mytable.rows.length
+statement_pdf_save_count=0
+voice_usage_save_count  =0
+text_usage_save_count   =0
+data_usage_save_count   =0
+#
+mytable.rows.each_with_index {
+  |r, i|
 
-  if (i==1) # First line is header info.
+  if (i==0) # First line is header info.
     next
   end
 
-  cell_list = r.cells
-  bill_period=cell_list[0].text
-  #plans_and_service_charges=cell_list[1].text   # (Who cares)
-  total_amount_due=cell_list[2].text
-  bill_link = cell_list[3].link(:index, 0)
-  
-  puts "Row(#{i}): bill_period='#{bill_period}' total_amount_due='#{total_amount_due}'"
+  puts "Row(#{i}):"
+  #r.cells.each {
+  #  |c|
+  #  if (c.colspan() != 1)
+  #    puts "  (colspan=#{c.colspan()}):#{c.text}"
+  #  else
+  #    puts "  '#{c.text}'"
+  #  end
+  #}
+  #puts
 
-  # Bill_period looks like: 01/06/2012 - 02/05/2012
-  fields=bill_period.split(/[ \/\-]+/)
-  date_from_string=fields[2]+fields[0]+fields[1]
-  date_to_string  =fields[5]+fields[3]+fields[4]
-  #fields.each do |f|
-  #  puts '  Date field: "'+f+'"'
-  #end
-  puts '  date_from_string='+date_from_string
-  puts '  date_to_string='+date_to_string
-  # The end-day of the date range is the billing date on the bill itself.
+  if (landline)
+    cell_list = r.cells
+    bill_period=cell_list[0].text
+    #plans_and_service_charges=cell_list[1].text   # (Who cares)
+    bill_total=cell_list[2].text
+    bill_link = cell_list[3].link(:index, 0)
+    
+    #puts "  Row(#{i}): bill_period='#{bill_period}' bill_total='#{bill_total}'"
+    puts "  bill_period='#{bill_period}' bill_total='#{bill_total}'"
 
-  puts '  total amount due '#{c_total_amount_due.text}'"
+    # Bill_period looks like: 01/06/2012 - 02/05/2012
+    fields=bill_period.split(/[ \/\-]+/)
+    date_from_string=fields[2]+fields[0]+fields[1]
+    date_to_string  =fields[5]+fields[3]+fields[4]
+    #fields.each do |f|
+    #  puts '  Date field: "'+f+'"'
+    #end
+    puts '  date_from_string='+date_from_string
+    puts '  date_to_string='+date_to_string
+    # The end-day of the date range is the billing date on the bill itself.
 
-  # There's two kinds of bill links, one is 'View', a link to a separate page.
-  # The other, for older bills, is a straightforward link 'PDF' to a pdf file.
-  # (Annoyingly, the PDF link also pops up a window if you click on it.  With
-  # a bit of luck, this doesn't break anything in our parsing of the current table.)
+    # For landline, there's two kinds of bill links, one is 'View', a
+    # link to a separate page.  The other, for older bills, is a
+    # straightforward link 'PDF' to a pdf file.  (Annoyingly, the PDF
+    # link also pops up a window if you click on it.  With a bit of
+    # luck, this doesn't break anything in our parsing of the current
+    # table.)
 
 
-  key=phone_number+'.'+date_to_string
-  if (bill_link.text.match(/View/)) 
-    if (existing_pdfs[key]==1)
-      puts "  It's a 'View' link"
+    key=phone_number+'.'+date_to_string+'.pdf'
+    if (bill_link.text.match(/View/)) 
+      if (existing_files[key]==1)
+        puts "  It's a 'View' link"
+        puts "  Already have this pdf file, with key '#{key}'"
+      else
+        puts "  It's a 'PDF' link"
+        if (download_bills_pdf==1)
+          puts "  Don't have this file, with key '#{key}'.  Kludging URL for immediate PDF download."
+          
+          # Yeah, it's ugly and brittle but so is their stupid website.  Often the 'View'
+          # link for older bills takes you to the bill detail page for the most recent statement
+          # because the actual one you want doesn't exist.   So we'll just save the grief, at
+          # least for PDF statements because we know the URL that would retrieve the PDF (that
+          # might otherwise not be retrievable at all.
+
+          browser.goto "https://www.att.com/view/viewfullbillPDF.doview?stmtID=#{date_to_string}|#{account_number}|S|P"
+          puts "file_rename_lookup[#{date_to_string}]=att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.pdf"
+          file_rename_lookup[date_to_string]="att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.pdf"
+          downloaded_files += 1
+        end
+      end
+
+      # Now save the info in the link for later processing, if we want html and csv(usage).
+      puts "  Saving URL for possible later download of html and csv info."
+      ## Save the href for later download.
+      statement_url_list.push([bill_link.text, bill_link.href.to_s, date_from_string, date_to_string])
+
+    elsif (bill_link.text.match(/PDF/)) 
+      if (existing_files[key]==1)
+        puts "  Already have this PDF file, with key '#{key}'"
+        # And there's no way to retrieve html or usage for a bill that only had PDF option.
+      else
+        if (download_bills_pdf==1)
+          puts "  Don't have this file, with key '#{key}'.  ATTEMPT IMMEDIATE DOWNLOAD."
+
+          if (false)
+            # Just clicking the link tends to trigger the multiple file dialog.
+            # So we go for the kludgey hack below.
+            bill_link.click
+          else
+            old_url=bill_link.html
+            # The link looks like this.  We want the URL in the onclick.
+            #    <a href="javascript:void(0);" class="wt_Body" desturl="/view/viewfullbillPDF.doview" onclick="window.open('/view/viewfullbillPDF.doview?stmtID=20120605|7753295648280|S|P&amp;reportActionEvent=A_VB_VIEW_FULL_BILL_PDF_LINK', 'viewpdf', config='height=600, width=800, toolbar=no, menubar=yes, scrollbars=yes, resizable=yes, location=no, directories=no, status=no'); return false;">PDF</a>
+            #
+            #puts "  URL: '#{old_url}'"
+            old_url =~ /^.*window\.open\(\'([^&]*)&/
+            url='https://www.att.com'+Regexp.last_match[1]
+            #
+            # URL now looks something like this:
+            #   'https://www.att.com/view/viewfullbillPDF.doview?stmtID=20131105|7753295648280|S|P'
+            # We could have just formatted it ourselves (as we've done elsewhere
+            # in the code) instead of parsing it out.  But, uh, well, here we are.
+            #
+            puts "  URL: '#{url}'"
+            browser.goto url
+            puts "file_rename_lookup[#{date_to_string}]=att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.pdf"
+            file_rename_lookup[date_to_string]="att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.pdf"
+            downloaded_files += 1
+
+          end
+        end
+      end
+    else
+      puts "No idea what format this table entry is."
+    end
+
+  else
+    # Wireless has different table structure. (And link type/behaviours.)
+
+    cell_list = r.cells
+    bill_period=cell_list[0].text
+    #plans_and_service_charges=cell_list[1].text   # (Who cares)
+    bill_total=cell_list[1].text
+    if (cell_list[2].colspan() != 1)
+      # Colspan=6 means no payment received.  Moves the other columns about a bit.
+      # (Contains info about due date, autopay scheduled, etc)
+    else
+      payment_date    = cell_list[2].text
+      payment_amt     = cell_list[3].text
+      payment_method  = cell_list[4].text
+      payment_autopay = cell_list[5].text
+      payment_status  = cell_list[6].text
+      payment_conf    = cell_list[7].text
+
+      puts "  Payment_date    = '#{payment_date}'"
+      puts "  Payment_amt     = '#{payment_amt}'"
+      puts "  Payment_method  = '#{payment_method}'"
+      puts "  Payment_autopay = '#{payment_autopay}'"
+      puts "  Payment_status  = '#{payment_status}'"
+      puts "  Payment_conf    = '#{payment_conf}'"
+
+    end
+
+    # bill_link = cell_list[?].link(:index, 0)
+    
+    puts "  bill_period='#{bill_period}' bill_total='#{bill_total}'"
+
+    # Bill_period looks like: 01/06/2012 - 02/05/2012
+    fields=bill_period.split(/[ \/\-]+/)
+    date_from_string=fields[2]+fields[0]+fields[1]
+    date_to_string  =fields[5]+fields[3]+fields[4]
+    #fields.each do |f|
+    #  puts '    Date field: "'+f+'"'
+    #end
+    puts '    date_from_string='+date_from_string
+    puts '    date_to_string='+date_to_string
+    # The end-day of the date range is the billing date on the bill itself.
+
+    # For wireless, there's two kinds of bill links for each bill, one
+    # is 'Online', which pops up a separate window with an HTML
+    # version of the bill.  The other, 'PDF', pops up a separate
+    # window which requests the PDF.
+
+    # We're not even going to bother wading through the link clicking and
+    # dealing with popups, and chrome complaining about multiple downloads.
+    # Figured out the url format that gets called.  We'll just grab the
+    # file directly.
+
+    key=phone_number+'.'+date_to_string+'.pdf'
+    if (existing_files[key]==1)
       puts "  Already have this pdf file, with key '#{key}'"
     else
-      puts "  It's a 'PDF' link"
       if (download_bills_pdf==1)
         puts "  Don't have this file, with key '#{key}'.  Kludging URL for immediate PDF download."
-        
+          
         # Yeah, it's ugly and brittle but so is their stupid website.  Often the 'View'
         # link for older bills takes you to the bill detail page for the most recent statement
         # because the actual one you want doesn't exist.   So we'll just save the grief, at
         # least for PDF statements because we know the URL that would retrieve the PDF (that
         # might otherwise not be retrievable at all.
 
-        browser.goto "https://www.att.com/view/viewfullbillPDF.doview?stmtID=#{date_to_string}|#{account_number}|S|P"
+        browser.goto "https://www.att.com/view/titan_printer_friendly.action?statementID=#{date_to_string}|#{account_number}|T01|W"
+
+        puts "file_rename_lookup[#{date_to_string}]=att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.pdf"
+        file_rename_lookup[date_to_string]="att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.pdf"
+
         downloaded_files += 1
       end
     end
 
-    # Now save the info in the link for later processing, if we want html and csv(usage).
-    puts "  Saving URL for possible later download of html and csv info."
-    ## Save the href for later download.
-    statement_url_list.push([bill_link.text, bill_link.href.to_s, date_to_string])
-
-  elsif (bill_link.text.match(/PDF/)) 
-    if (existing_pdfs[key]==1)
-      puts "  Already have this PDF file, with key '#{key}'"
-      # And there's no way to retrieve html or usage for a bill that only had PDF option.
-    else
-      if (download_bills_pdf==1)
-        puts "  Don't have this file, with key '#{key}'.  ATTEMPT IMMEDIATE DOWNLOAD."
-
-        if (false)
-          # Just clicking the link tends to trigger the multiple file dialog.
-          # So we go for the kludgey hack below.
-          bill_link.click
-        else
-          old_url=bill_link.html
-          # The link looks like this.  We want the URL in the onclick.
-          #    <a href="javascript:void(0);" class="wt_Body" desturl="/view/viewfullbillPDF.doview" onclick="window.open('/view/viewfullbillPDF.doview?stmtID=20120605|7753295648280|S|P&amp;reportActionEvent=A_VB_VIEW_FULL_BILL_PDF_LINK', 'viewpdf', config='height=600, width=800, toolbar=no, menubar=yes, scrollbars=yes, resizable=yes, location=no, directories=no, status=no'); return false;">PDF</a>
-          #
-          puts "URL: '#{old_url}'"
-          old_url =~ /^.*window\.open\(\'([^&]*)&/
-          url='https://www.att.com'+Regexp.last_match[1]
-          #
-          # URL now looks something like this:
-          #   'https://www.att.com/view/viewfullbillPDF.doview?stmtID=20131105|7753295648280|S|P'
-          # We could have just formatted it ourselves (as we've done elsewhere
-          # in the code) instead of parsing it out.  But, uh, well, here we are.
-          #
-          puts "URL: '#{url}'"
-          browser.goto url
-          downloaded_files += 1
-
-        end
-      end
-    end
+    statement_date_list.push([date_from_string, date_to_string])
   end
 
 }
@@ -394,21 +655,22 @@ mytable.rows.each {
 # (Looks like we could just as easily start at any one of these pages
 # and select any bill, but perhaps this is an easier way to get them.)
 #
-puts
+puts""
 puts "Processing stored urls for bills:"
+# (Only landline accounts will have anything here.)
 statement_url_list.reverse_each do |x|
   puts "  Processing stored url"
 
   # We're reversing this operation:
-  #   statement_url_list.push([bill_link.text, bill_link.href.to_s, date_to_string])
+  #   statement_url_list.push([bill_link.text, bill_link.href.to_s, date_from_string, date_to_string])
 
-  bill_link_text, bill_link_href, date_to_string = x
+  bill_link_text, bill_link_href, date_from_string, date_to_string = x
 
   puts "    bill_link_text=#{bill_link_text}  date_to_string=#{date_to_string}"
 
   # Only bother going to the page if we're interested in the html or csv info we'll get.
-  if not ( ( download_bills_html==1 && existing_htmls[phone_number+'.'+date_to_string] != 1 ) ||
-           ( download_usage==1      && existing_csvs[phone_number+'.'+date_to_string] != 1 ) )
+  if not ( ( download_bills_html==1 && existing_files[phone_number+'.'+date_to_string+'.html'] != 1 ) ||
+           ( download_usage==1 && (existing_files[phone_number+'.'+date_to_string+'.voice_usage.csv'] != 1 ) ) )
     puts "    Nothing to retrieve for this bill."
     next
   end
@@ -427,8 +689,8 @@ statement_url_list.reverse_each do |x|
   badpage=false
   combo.selected_options.each {
     |selected|
-    puts "    SELECTED: '#{selected.text}'"
-    # SELECTED: ' September 06, 2012 - October 05, 2012 '
+    puts "    Selected: '#{selected.text}'"
+    # Selected: ' September 06, 2012 - October 05, 2012 '
     t=Time.parse(selected.text.split('-')[1].strip)
     puts "    time.parse: "+t.strftime("  %Y%m%d")
     yyyymmdd=t.strftime("%Y%m%d")
@@ -443,17 +705,15 @@ statement_url_list.reverse_each do |x|
   end
 
 
-  html_filename = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_to_string}.html")
-  csv_filename  = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_to_string}.csv")
+  html_filename = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.html")
 
   # Save a copy of the html if we want it.
-  # But only if we want it.????????????????????
-  if ( download_bills_html==1 && existing_htmls[phone_number+'.'+date_to_string] != 1 )
+  if ( download_bills_html==1 && existing_files[phone_number+'.'+date_to_string+'.html'] != 1 )
     puts "    Saving a HTML version of the bill"
     File.open(html_filename, 'w+b') { |file| file.puts(browser.html) }
   end
 
-  if (download_usage==1 && existing_csvs[phone_number+'.'+date_to_string] != 1 )
+  if (download_usage==1 && existing_files[phone_number+'.'+date_to_string+'.voice_usage.csv'] != 1 )
     puts "    Seeing if there is any usage."
 
     usage_link=browser.link(:text, "Usage details")
@@ -462,22 +722,27 @@ statement_url_list.reverse_each do |x|
     else
       puts "    There's usage.  Clicking on the usage details link"
       usage_link.click
+
+      # Click 'off' link if it exists, so we get numbers, not translated into names.
+      if (browser.link(:name, 'offlink').exists?)
+        browser.link(:name, 'offlink').click
+      end
+
+
       #mytable=browser.div(:id, 'subsections').table(:class, 'table stripe mobileTable')
       mytable=browser.table(:class, 'table stripe mobileTable')
 
+      csv_filename  = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.voice_usage.csv")
       csv_file=File.open(csv_filename, 'w')
     
-      csv_file.puts 'Item_No, Date Time, Place Called, Number, Minutes, Amount'
-      #csv_file.puts 'Item_No, Date Time, Place Called, Number, Code, Minutes, Amount, AirtimeCharge, OtherCharge'
+      fields=['Item_No', 'Date Time', 'Calling TN', 'Called TN', 'Dur(s)', 'Amount', 'Tax', 'Total_amt', 'Rate Type', 'Status', 'Call Type', 'Billed TN', 'Location']
+      csv_file.puts fields.join("\t")
 
-      i=0
-      mytable.rows.each {
-        |r|
-
-        i=i+1
+      mytable.rows.each_with_index {
+        |r, i|
 
         # First row is a header.
-        if (i==1)
+        if (i==0)
           next
         end
 
@@ -496,7 +761,7 @@ statement_url_list.reverse_each do |x|
         date=r.cell(:index, 1).text.strip
         time=r.cell(:index, 2).text
         tn=r.cell(:index, 3).text.strip.gsub(/\D/, '')
-        place_called=r.cell(:index, 4).text.strip
+        call_location=r.cell(:index, 4).text.strip
         minutes=r.cell(:index, 5).text.strip
         #airtime=r.cell(:index, 5).text.strip
         #ld=r.cell(:index, 6).text.strip
@@ -521,18 +786,28 @@ statement_url_list.reverse_each do |x|
         end
         t=Time.parse(time_in)
         #puts "  time.parse: "+t.strftime("  %Y%m%d %H%M %Z")
-        if (tz != '') 
-          yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M %Z")
-        else
-          yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M")
-        end
-        datetime = yyyymmdd_hhmm_tz
+        #if (tz != '') 
+        #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M %Z")
+        #else
+        #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M")
+        #end
+        #datetime = yyyymmdd_hhmm_tz
+        datetime = t.iso8601
 
-        puts          "      "+[n, datetime, place_called, tn, minutes, amount].join(',')
-        csv_file.puts          [n, datetime, place_called, tn, minutes, amount].join(',')
+        calling_tn=phone_number
+        called_tn=tn
+        billed_tn=phone_number
+        seconds=(minutes.to_i)*60
+        rate_type=''
+        status=''
+        call_type='Voice'
+        fields=[n, datetime, calling_tn, called_tn, seconds.to_s, amount, '0.00', amount, rate_type, status, call_type, billed_tn, call_location]
+        puts "      "+fields.join(",")
+        csv_file.puts fields.join("\t") # Yeah, it's tab-delimited, not CSV.  So sue me.
 
       }
       csv_file.close
+      voice_usage_save_count += 1
     end
   end
 
@@ -540,10 +815,210 @@ end
 puts "Done processing stored urls for bills."
 
 
+# Now let's process the stored list of URLs to grab individual bills.
+# (Looks like we could just as easily start at any one of these pages
+# and select any bill, but perhaps this is an easier way to get them.)
+#
+puts""
+puts "Processing stored list of bill dates to download for html and/or usage:"
+# (Only wireless will have anything here.)
+statement_date_list.reverse_each do |x|
+  # We're reversing this operation:
+  #   statement_date_list.push([date_from_string, date_to_string])
+  date_from_string, date_to_string = x
+
+  puts "  Processing stored date: '#{date_from_string} -- #{date_to_string}'"
+
+  html_filename = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.html")
+
+  # Grab the HTML bill if needed.
+  if (download_bills_html==1)
+    if existing_files[phone_number+'.'+date_to_string+'.html'] == 1
+      puts "    Already have HTML copy of this bill."
+    else
+      # This will bring the HTML bill (it's buried in ajax and popup crap in their links)
+      #browser.goto "https://www.att.com/olam/billPrintPreview.myworld?billStatementID=#{date_to_string}|#{account_number}|T01|W"
+      browser.goto "https://www.att.com/olam/billPrintPreview.myworld?fromPage=history&billStatementID=#{date_to_string}|#{account_number}|T01|W&reportActionEvent=A_VB_BILL_PRINT"
+      
+      puts "    Saving a HTML version of the bill ('#{html_filename}')"
+      File.open(html_filename, 'w+b') { |file| file.puts(browser.html) }
+    end
+  end
+
+
+
+  ['voice', 'text', 'data'].each_with_index { |usage_type, i|
+
+    # Grab the voice/text/data usage if needed.
+    if (download_usage==1)
+
+      if existing_files[phone_number+'.'+date_to_string+'.'+usage_type+'_usage.csv'] == 1
+        puts "    Already have CSV #{usage_type} usage of this bill."
+      else
+        puts "    Fetching #{usage_type} usage info for this bill."
+
+        browser.goto "https://www.att.com/olam/#{['talk', 'text', 'web'][i]}BillUsageDetail.myworld?billStatementID=#{date_to_string}|#{account_number}|T01|W&ctn=#{phone_number}"
+
+        csv_filename  = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.#{usage_type}_usage.csv")
+        csv_file=File.open(csv_filename, 'w')
+
+        if    (usage_type=='voice')
+          fields=['Item_No', 'Date Time', 'Calling TN', 'Called TN', 'Dur(s)', 'Amount', 'Tax', 'Total_amt', 'Rate Type', 'Status', 'Call Type', 'Billed TN', 'Location']
+          no_records_regexp="Looks like you didn\'t make or receive any calls"
+          voice_usage_save_count += 1
+        elsif (usage_type=='text')
+          fields=['Date Time', 'Calling TN', 'Called TN', 'Billed TN', 'Amount', 'Usage type']
+          no_records_regexp="You did not send or receive any text messages"
+          text_usage_save_count += 1
+        elsif (usage_type=='data')
+          fields=['Date Time', 'Size', 'Amount']
+          no_records_regexp="Looks like you didn\'t use any data during this billing period"
+          data_usage_save_count += 1
+        else
+          puts "Weird error"
+          exit
+        end
+
+        # Yeah, it's tab-delimited, not CSV.  So sue me.
+        csv_file.puts fields.join("\t")
+
+        if ( (browser.div(:class, 'msg box').exists?) && (browser.div(:class, 'msg box').text =~ /#{no_records_regexp}/ ))
+          puts "    No #{usage_type} usage on this statement."
+        else
+
+          if (usage_type != 'data')
+            # We (or at least I) probably want numbers rather than phone-book translation.  (If not, fix the rest of
+            # the code that assumes phone numbers are, well, numbers.)  But not applicable for data usage records.
+            browser.radio(:id, 'show_numbers').set
+          end
+
+          puts "    Usage table for #{usage_type}: #{date_to_string}"
+          n=0
+          browser.div(:class, 'scroller_tbl').table(:id, 't').rows.each_with_index {
+            |r, i|
+
+            #puts "      Row: #{i+1}"
+            #r.cells.each {
+            #  |c|
+            #
+            #  puts "        Cell: '#{c.text}'"
+            #}
+
+            cell_list = r.cells
+
+            datetime=cell_list[0].text
+            # Throw in a timezone if we have one (and the time doesn't already have one (here it doesn't))
+            # If no timezone exists, it might get tagged zulu.  Nah, probably whatever localtime is.
+            if (tz != '') 
+              datetime = datetime+" "+tz
+            end
+            t=Time.parse(datetime)
+            #puts "      time.parse: "+t.strftime("  %Y%m%d %H%M %Z")
+            #if (tz != '') 
+            #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M %Z")
+            #else
+            #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M")
+            #end
+            #datetime = yyyymmdd_hhmm_tz
+            datetime = t.iso8601
+
+
+            if (usage_type=='voice')
+              tn=cell_list[1].text.strip.gsub(/\D/, '')
+              tn_class=cell_list[1].div().attribute_value("class")
+              #tn_class=cell_list[1].div().class_name  # This would work too, but don't say '.class', get ruby's regular class operator.
+              call_location=cell_list[2].text.strip
+              rate_type=cell_list[3].text.strip   # Their headings calls it a call type but it looks like a rate type.
+              minutes=cell_list[4].text.strip
+              amount=cell_list[5].text.strip
+              #
+              seconds=(minutes.to_i)*60
+            elsif (usage_type=='text')
+              tn=cell_list[1].text.strip.gsub(/\D/, '')
+              tn_class=cell_list[1].div().attribute_value("class")
+              #tn_class=cell_list[1].div().class_name  # This would work too, but don't say '.class', get ruby's regular class operator.
+              text_usage_type=cell_list[2].text.strip
+              amount=cell_list[3].text.strip
+            elsif (usage_type=='data')
+              size=cell_list[1].text.strip.gsub(/\,/, '')   # Units are KBs, unless otherwise specified.  Ditch commas.
+              #blank=cell_list[2].text.strip
+              amount=cell_list[3].text.strip
+            else
+              puts "Weird error"
+              exit
+            end
+
+            # Figure direction for voice or text.
+            if ( (usage_type=='voice') || (usage_type=='text') )
+              if (tn_class =~ /^incomingCall/i)
+                calling_tn=tn
+                called_tn=phone_number
+              elsif (tn_class =~ /^outgoingCall/i)
+                calling_tn=phone_number
+                called_tn=tn
+              else
+                # No idea what to do here.  We'll assume it's outbound for now.
+                calling_tn=phone_number
+                called_tn=tn
+              end
+              billed_tn=phone_number
+            end
+
+
+            if (usage_type=='voice')
+              status=''
+              call_type='Voice'
+              fields=[i+1, datetime, calling_tn, called_tn, seconds.to_s, amount, '0.00', amount, rate_type, status, call_type, billed_tn, call_location]
+              puts "      "+fields.join(",")
+              csv_file.puts fields.join("\t") # Yeah, it's tab-delimited, not CSV.  So sue me.
+            elsif (usage_type=='text')
+
+              # As a rough standard for my collection of screen-scraping, csv-saving CDR files
+              # this is the plan for the csv files for text messages.
+
+              # date_time, start time of call (iso.8601, with timezone)
+              # From TN (Can be tricky depending on info we can figure out)
+              # To TN  (Can be tricky depending on info we can figure out)
+              # Billed TN
+              # text_usage_type ("Text/instant messaging", "Multimedia messaging")
+              # amount       (In $dollars.cents)
+
+              fields=[datetime, calling_tn, called_tn, billed_tn, amount, text_usage_type]
+              puts     "      "+fields.join(",")
+              csv_file.puts fields.join("\t") # Yeah, it's tab-delimited, not CSV.  So sue me.
+
+            elsif (usage_type=='data')
+              fields=[datetime, size, amount]
+              puts     "      "+fields.join(",")
+              csv_file.puts fields.join("\t") # Yeah, it's tab-delimited, not CSV.  So sue me.
+            else
+              # It should never get here.
+              puts "Weird error"
+              exit
+            end
+
+          }
+          puts "    End of table"
+        end
+        csv_file.close
+
+      end
+
+    end
+  }
+
+
+end
+puts "Done processing dates for bills."
+
+
+# Here we rename any files downloaded from the web interface (ie named by their end
+# but we want to rename to our own scheme, after we've confirmed the download).
+#
 if (downloaded_files==0) 
   puts 'No new files to rename/download from browser.'
 
-  # ???? Some sanity checks, based on actual date, vs listed html
+  # ???? Should do some sanity checks, based on actual date, vs listed html
   # files, vs previously download files.
 else
   puts 'Files downloaded in browser: '+downloaded_files.to_s
@@ -574,19 +1049,22 @@ else
 
     #puts "  Link text: '#{l.text}'"
     if (l.text =~ /^ATT_(\d+)_(\d+).pdf$/)
-      # 'ATT_7753295648280_20131105.pdf'
+      # 'ATT_8122935627480_20131106.pdf'
       puts "  Found PDF statement file for renaming: #{l.text}"
 
-      phone_number_key=Regexp.last_match[1]
+      account_number_key=Regexp.last_match[1]  # Not used for anything.
       date_key=Regexp.last_match[2]
 
-      newfilename = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_key}.pdf")
-      
-      puts "    Do:    File.rename(#{File.join(tempdir, l.text)}', '#{newfilename})"
-      File.rename(File.join(tempdir, l.text), newfilename)
+      puts "date_key='#{date_key}'"
+      newfilename = File.join(destdir, file_rename_lookup[date_key])
 
-      # ???? Might be better if moving cross filesystems.  
-      # FileUtils.mv(File.join(tempdir, l.text), newfilename)
+      #puts "    Do:    File.rename('#{File.join(tempdir, l.text)}', '#{newfilename}')"
+      #File.rename(File.join(tempdir, l.text), newfilename)
+      puts "    Do:    FileUtils.mv('#{File.join(tempdir, l.text)}', '#{newfilename}')"
+      FileUtils.mv(File.join(tempdir, l.text), newfilename)
+
+      statement_pdf_save_count += 1
+
       
     end
 
@@ -596,6 +1074,22 @@ else
   sleep(5)
 end
 
+
+if (downloaded_files != statement_pdf_save_count)
+  #??????????? Raise hell.
+end
+
+summary += "PDF statements downloaded:    #{statement_pdf_save_count}/#{statement_count}\n"
+
+summary += "Voice usage files downloaded: #{voice_usage_save_count}/#{statement_count}\n"
+
+if (! landline)
+  summary += "Text usage files downloaded:  #{text_usage_save_count}/#{statement_count}\n"
+  summary += "Data usage files downloaded:  #{data_usage_save_count}/#{statement_count}\n"
+end
+
+
+
 puts "Deleting the temporary directory (#{tempdir})"  # Which should be empty
 begin
   Dir.rmdir(tempdir)
@@ -603,20 +1097,38 @@ rescue
   puts "Warning: problems deleting directory (#{tempdir})."
 end
 
-
-pause_secs=5
 # Audible alert.  Yeah, it's goofy, but handy for testing.  Ditch it if you don't like it.
 puts "\007"  # Ring a bell.
-puts progname+' exiting in '+pause_secs.to_s+' seconds...'
-sleep(pause_secs)  # To make sure things have settled down.
 
+
+
+
+
+
+pause_secs=5
+
+puts progname+' logging off in '+pause_secs.to_s+' seconds...'
+sleep(pause_secs)  # To make sure things have settled down.
 # Logout page
 browser.goto 'https://www.att.com/olam/logout.olamexecute'
-sleep(pause_secs)
 
+puts progname+' Closing browser in '+pause_secs.to_s+' seconds...'
+sleep(pause_secs)
 browser.close
 
-puts progname+' ended'
+#??????????? This is optimistic/delusional.  Intend to add some sanity checks later.
+summary += "Errors: 0\n"
+
+end_time=Time.now
+puts       "#{progname} ending: #{end_time}"
+summary += "#{progname} ended:  #{end_time}\n"
+
+# Print the summary string we've been building up.
+puts "\n"
+puts "####SUMMARY####\n"
+puts "\n"
+puts summary
+puts "\n"
 
 
 __END__

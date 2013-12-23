@@ -77,13 +77,17 @@ att_phone_watir.rb
 
 att.conf
 
+This script can download bill PDFs, bill html files , and usage
+records from att.com.
+
 Make sure you have ruby, with the watir (`http://watir.com`) drivers.
 A working chrome brower setup is needed.  Edit callcentric.conf with
 your credentials and location of download directory.  Run
 callcentric_watir.rb and have at it.
 
-This script works for landline phones only.  It might also work for
-mobile phones too but hasn't been tested.  It downloads bill pdfs,
-bill html, and usage records, based on the billed data (as a csv
-file).
+This script works for my landline phone and my separate mobile
+account.  It's possible that, even if you have an AT&T account, that
+your account may be kept on a different billing/web system and so this
+script may not work for you.  If you've got AT&T's Uverse service,
+it's even less likely to be successful.
 
