@@ -98,7 +98,7 @@ passcode=cfg['passcode']
 # Passcode is optional, unless needed for login, then it will fall over at login failure.
 
 # In which timezone do you want times interpreted?
-tz=cfg['tz'].nil? ? 'PST8PDT' : cfg['tz']
+timezone=cfg['timezone'].nil? ? 'PST8PDT' : cfg['timezone']
 # If it ends up blank, US times will be be interpeted as machine local time.
 
 # What to do at run time.
@@ -125,7 +125,7 @@ begin
     puts "  --username username  (safer to specify in config file)"
     puts "  --password password  (safer to specify in config file)"
     puts "  --passcode passcode  (if needed for login)"
-    puts "  --tz timezone        (Timezone for interpreting usage timestamps, default PST8PDT)"
+    puts "  --timezone timezone        (Timezone for interpreting usage timestamps, default PST8PDT)"
     puts "  --download_bills_pdf"
     puts "  --download_bills_html"
     puts "  --download_usage"
@@ -781,12 +781,12 @@ statement_url_list.reverse_each do |x|
 
         # Throw in a timezone if we have one (and the time doesn't already have one (here it doesn't))
         time_in="#{date}/#{usage_yyyy} #{time}"
-        if (tz != '') 
-          time_in = time_in+" "+tz
+        if (timezone != '') 
+          time_in = time_in+" "+timezone
         end
         t=Time.parse(time_in)
         #puts "  time.parse: "+t.strftime("  %Y%m%d %H%M %Z")
-        #if (tz != '') 
+        #if (timezone != '') 
         #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M %Z")
         #else
         #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M")
@@ -909,12 +909,12 @@ statement_date_list.reverse_each do |x|
             datetime=cell_list[0].text
             # Throw in a timezone if we have one (and the time doesn't already have one (here it doesn't))
             # If no timezone exists, it might get tagged zulu.  Nah, probably whatever localtime is.
-            if (tz != '') 
-              datetime = datetime+" "+tz
+            if (timezone != '') 
+              datetime = datetime+" "+timezone
             end
             t=Time.parse(datetime)
             #puts "      time.parse: "+t.strftime("  %Y%m%d %H%M %Z")
-            #if (tz != '') 
+            #if (timezone != '') 
             #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M %Z")
             #else
             #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M")
