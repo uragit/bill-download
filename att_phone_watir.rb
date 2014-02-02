@@ -1,17 +1,9 @@
 #!/usr/bin/ruby
-# att_phone_watir.rb -- Downloads monthly statements from att.com, for a single home phone account.
+# att_phone_watir.rb -- Downloads monthly statements from att.com, for a single account.
+# ./att_phone_watir.rb --config att.conf
 
 
-# Disclaimer:
-#   This code worked for me, at least once, on a particular account on
-#   a particular computer.   Maybe it will work for you.  If not, then
-#   maybe it will almost work, and maybe that's better than nothing.
-#   Maybe it's not.   
-#
-#   It's a work in progress and could probably use some improvement.
-#   (I'm new to Ruby and it probably shows.)
-#   If it breaks, you get to keep both pieces.
-#   
+
 #   Big phone companies often have multiple back-end systems which
 #   behave differently from each other.   If this code doesn't work
 #   there's a good chance that AT&T has got your account on a different
@@ -20,7 +12,7 @@
 
 # Note:
 #
-# As a rough standard for my collection of screen-scraping, csv-saving CDR files
+# As a rough standard for this collection of screen-scraping, csv-saving CDR files
 # this is the plan for the csv files.
 #
 #   n, the nth call in this
@@ -87,7 +79,7 @@ rescue => err
 end
 
 # Where we're going to collect all the downloaded, renamed files.
-destdir=cfg['destdir'].nil? ? "downloads/att" : cfg['destdir']
+destdir=cfg['destdir'].nil? ? "downloads" : cfg['destdir']
 
 # Where to stash temporary files.  (Note: we'll also append the PID)
 tempdir=cfg['tempdir'].nil? ? "downloads/tmp" : cfg['tempdir']
@@ -199,6 +191,19 @@ end
 # Add PID to tempdir pathname.
 tempdir=tempdir+"."+Process.pid.to_s
 
+puts 'Place for temp files: '+tempdir
+
+if (File.directory?(tempdir))
+  puts "  Directory exists."
+elsif (File.file?(tempdir))
+  puts "  Can't use directory (tempdir).  It's a regular file."
+else
+  puts "  Directory ("+tempdir+") does not exist.  Creating."
+  Dir.mkdir(tempdir)
+end
+
+
+
 if (! File.directory?(destdir))
   puts "Can't find destination directory (#{destdir}).  Exiting.  Perhaps you're running in the wrong directory."
   exit
@@ -207,12 +212,72 @@ end
 ####################################
 ####################################
 
+def bell()
+  # Ring a terminal bell, but only if we don't have stdout piped.
+  # (It would make more sense to figure out if we're in a terminal, perhaps)
+  if (File.pipe?($stdout) )
+    # Don't ring a bell; probably sending output to /usr/bin/mail or similar.
+  else
+    puts "\007"  # Ring a bell.
+  end
+end
+
+
+
+def disable_pdf_plugin(browser)
+
+  puts 'Going to about:plugins page (to disable plugins, so PDFs save):'
+
+  # This is much simpler!
+  # disable Chrome PDF Viewer
+  browser.goto "about:plugins"
+  browser.span(:text => "Chrome PDF Viewer").parent.parent.parent.a(:text => "Disable", :class => "disable-group-link").click
+
+end
+
+####################################
+####################################
+
+
+
+## Chrome
+##
+profile = Selenium::WebDriver::Chrome::Profile.new
+profile['download.prompt_for_download'] = false
+profile['download.default_directory'] = tempdir
+##
+##profile = Selenium::WebDriver::Firefox::Profile.new
+#profile['browser.download.folderList'] = 2
+#profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
+
+
+#browser = Watir::Browser.new :ff
+#browser = Watir::Browser.new :firefox
+browser = Watir::Browser.new :chrome, :profile => profile
+#browser = Watir::Browser.new :chrome
+
+mycontainer = Watir::Container
+
+
+
+
+disable_pdf_plugin(browser)
+
+
+
 
 summary=""
 
 start_time=Time.now
 puts       "#{progname} starting: #{start_time}"
 summary += "#{progname} started:  #{start_time}\n"
+
+
+
+
+#############################################
+#      End of the (mostly) boilerplate      #
+#############################################
 
 
 
@@ -246,39 +311,6 @@ Dir.foreach(destdir) { |filename|
 downloaded_files=0
 
 
-puts 'Place for temp files: '+tempdir
-
-if (File.directory?(tempdir))
-  puts "  Directory exists."
-elsif (File.file?(tempdir))
-  puts "  Can't use directory (tempdir).  It's a regular file."
-else
-  puts "  Directory ("+tempdir+") does not exist.  Creating."
-  Dir.mkdir(tempdir)
-end
-
-
-
-
-## Chrome
-##
-profile = Selenium::WebDriver::Chrome::Profile.new
-profile['download.prompt_for_download'] = false
-profile['download.default_directory'] = tempdir
-##
-##profile = Selenium::WebDriver::Firefox::Profile.new
-#profile['browser.download.folderList'] = 2
-#profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
-
-
-#browser = Watir::Browser.new :ff
-#browser = Watir::Browser.new :firefox
-browser = Watir::Browser.new :chrome, :profile => profile
-#browser = Watir::Browser.new :chrome
-
-mycontainer = Watir::Container
-
-
 
 # The view links execute something like this:
 #    <a href="javascript:void(0);" class="wt_Body" desturl="/view/viewfullbillPDF.doview" onclick="window.open('/view/viewfullbillPDF.doview?stmtID=20120605|7753295648280|S|P&amp;reportActionEvent=A_VB_VIEW_FULL_BILL_PDF_LINK', 'viewpdf', config='height=600, width=800, toolbar=no, menubar=yes, scrollbars=yes, resizable=yes, location=no, directories=no, status=no'); return false;">PDF</a>
@@ -292,26 +324,10 @@ mycontainer = Watir::Container
 # url instead of clicking on their javascript-laden buttons.
 
 
-def disable_pdf_plugin(browser)
-
-  puts 'Going to about:plugins page (to disable plugins, so PDFs save):'
-
-  # This is much simpler!
-  # disable Chrome PDF Viewer
-  browser.goto "about:plugins"
-  browser.span(:text => "Chrome PDF Viewer").parent.parent.parent.a(:text => "Disable", :class => "disable-group-link").click
-
-end
-
-disable_pdf_plugin(browser)
-
-###############################
-###############################
-
-
-
 # Window activity seems to trigger some confusing javascript which breaks the login.
 puts "Don't resize browser window before login!  (Bad juju!)" 
+
+
 
 logging_in=true
 attempts=0
@@ -381,11 +397,19 @@ while (logging_in)
   if (not browser.text_field(:id, 'password').exists?)
     puts "Can't see a password prompt; assuming login success."
     logging_in=false
+    # Hold on, there seems to be some glitches around here.  Let's double check.
+    sleep(2)
+    if (browser.browser.input(:title, 'Login').exists?)
+      puts "Nah, there's still a login button.  Let's keep trying."
+      logging_in=true
+    end
   end
 
 end
 
+puts       "Successful login.\n"
 summary += "Successful login.\n"
+sleep(1)
 
 
 if (browser.link(:name, "MyATT_Wireless Services").exists?)
@@ -399,7 +423,7 @@ end
 
 if (not landline)
   # Grab this from the overview.
-  #  Phone number: 'Marmaduke  555-666-3264'
+  #  Phone number: 'Fred  555-666-3264'
   browser.goto 'https://www.att.com/olam/passthroughAction.myworld?actionType=Manage&gnLinkId=s1001'
   phone_number=browser.div(:class, 'minHt75 PadTop5 MarRight20').h4().text.split(/\s+/).last.gsub(/\D/,'')
   puts "Phone number: '#{phone_number}'"
@@ -430,7 +454,7 @@ end
 puts "account_number='#{account_number}', phone_number='#{phone_number}'  "
 
 puts "account_number='#{account_number}', phone_number='#{phone_number}'  "
-summary += "Phone number: #{phone_number}\n"
+summary += "Phone number:                         #{phone_number}\n"  # Spaced out to match other parts of summary
 
 
 if (not landline)
@@ -453,9 +477,13 @@ end
 #
 statement_count=mytable.rows.length
 statement_pdf_save_count=0
+statement_html_save_count=0
 voice_usage_save_count  =0
 text_usage_save_count   =0
 data_usage_save_count   =0
+#
+total_new_files = 0
+new_filenames = []
 #
 mytable.rows.each_with_index {
   |r, i|
@@ -706,11 +734,15 @@ statement_url_list.reverse_each do |x|
 
 
   html_filename = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.html")
+  # NOTE: we save this in different places for wireless/landline.  Should just define the html_filename once! ?????
 
   # Save a copy of the html if we want it.
-  if ( download_bills_html==1 && existing_files[phone_number+'.'+date_to_string+'.html'] != 1 )
+  if ( (download_bills_html==1) && (existing_files[phone_number+'.'+date_to_string+'.html'] != 1) )
     puts "    Saving a HTML version of the bill"
     File.open(html_filename, 'w+b') { |file| file.puts(browser.html) }
+    total_new_files += 1
+    statement_html_save_count += 1
+    new_filenames.push(html_filename)
   end
 
   if (download_usage==1 && existing_files[phone_number+'.'+date_to_string+'.voice_usage.csv'] != 1 )
@@ -808,6 +840,8 @@ statement_url_list.reverse_each do |x|
       }
       csv_file.close
       voice_usage_save_count += 1
+      total_new_files += 1
+      new_filenames.push(csv_filename)
     end
   end
 
@@ -829,6 +863,9 @@ statement_date_list.reverse_each do |x|
 
   puts "  Processing stored date: '#{date_from_string} -- #{date_to_string}'"
 
+  # Check that this matches with an earlier definition.  Landline/wireless pull from different locations.
+  # (Better still, just define it once, and save it for both possible uses.) ?????????
+  #
   html_filename = File.join(destdir, "att_phone_statement.#{phone_number}.d#{date_from_string}_#{date_to_string}.html")
 
   # Grab the HTML bill if needed.
@@ -842,6 +879,9 @@ statement_date_list.reverse_each do |x|
       
       puts "    Saving a HTML version of the bill ('#{html_filename}')"
       File.open(html_filename, 'w+b') { |file| file.puts(browser.html) }
+      total_new_files += 1
+      statement_html_save_count += 1
+      new_filenames.push(html_filename)
     end
   end
 
@@ -1002,6 +1042,9 @@ statement_date_list.reverse_each do |x|
         end
         csv_file.close
 
+        total_new_files += 1
+        new_filenames.push(csv_filename)
+
       end
 
     end
@@ -1064,6 +1107,8 @@ else
       FileUtils.mv(File.join(tempdir, l.text), newfilename)
 
       statement_pdf_save_count += 1
+      total_new_files += 1
+      new_filenames.push(newfilename)
 
       
     end
@@ -1076,19 +1121,32 @@ end
 
 
 if (downloaded_files != statement_pdf_save_count)
-  #??????????? Raise hell.
+  puts "MISMATCH WHEN RENAMING SAVED PDF FILES."
+  exit
 end
 
-summary += "PDF statements downloaded:    #{statement_pdf_save_count}/#{statement_count}\n"
+summary += "PDF statements downloaded:            #{statement_pdf_save_count}/#{statement_count}\n"
+summary += "HTML statements downloaded:           #{statement_html_save_count}/#{statement_count}\n"
 
-summary += "Voice usage files downloaded: #{voice_usage_save_count}/#{statement_count}\n"
+summary += "Voice usage files downloaded:         #{voice_usage_save_count}/#{statement_count}\n"
 
 if (! landline)
-  summary += "Text usage files downloaded:  #{text_usage_save_count}/#{statement_count}\n"
-  summary += "Data usage files downloaded:  #{data_usage_save_count}/#{statement_count}\n"
+  summary += "Text usage files downloaded:          #{text_usage_save_count}/#{statement_count}\n"
+  summary += "Data usage files downloaded:          #{data_usage_save_count}/#{statement_count}\n"
 end
 
 
+#??? This is optimistic/delusional.  Intend to add some sanity checks later.
+summary += "Errors:                               0\n"
+
+summary += "Total number of new files downloaded: #{total_new_files}\n"
+
+new_filenames.each {
+  |filename|
+
+  summary += "New file: #{filename}\n"
+
+}
 
 puts "Deleting the temporary directory (#{tempdir})"  # Which should be empty
 begin
@@ -1098,10 +1156,7 @@ rescue
 end
 
 # Audible alert.  Yeah, it's goofy, but handy for testing.  Ditch it if you don't like it.
-puts "\007"  # Ring a bell.
-
-
-
+bell()  # Ring a bell.
 
 
 
@@ -1115,9 +1170,6 @@ browser.goto 'https://www.att.com/olam/logout.olamexecute'
 puts progname+' Closing browser in '+pause_secs.to_s+' seconds...'
 sleep(pause_secs)
 browser.close
-
-#??????????? This is optimistic/delusional.  Intend to add some sanity checks later.
-summary += "Errors: 0\n"
 
 end_time=Time.now
 puts       "#{progname} ending: #{end_time}"

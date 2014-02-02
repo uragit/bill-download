@@ -1,15 +1,41 @@
 #!/usr/bin/ruby
+# callcentric_watir1.rb --config callcentric.conf
+
+# Disclaimer:
+#   This code worked for me, at least once, on a particular account on
+#   a particular computer.   Maybe it will work for you.  If not, then
+#   maybe it will almost work, and maybe that's better than nothing.
+#   Maybe it's not.   
+#
+#   It's a work in progress and could probably use some improvement.
+#   (I'm new to Ruby and it probably shows.)
+#   If it breaks, you get to keep both pieces.
+#   
+
 
 require 'rubygems'
 require 'watir-webdriver'
 require 'getoptlong'
 require 'time'
+require 'fileutils'
 
 
 config_filename='./callcentric.conf'
 
 ####################################
 ####################################
+
+# Normally the command-line options are read after the config file
+# so the command-line options can override the config file settings.
+# Except for the '--config filename' setting which we'll need to know
+# now.
+
+ARGV.each_with_index { |arg, i|
+  if ( (arg=='--config') || (arg=='-c') )
+    config_filename=ARGV[i+1]
+  end
+}
+
 
 cfg={}
 begin
@@ -19,7 +45,7 @@ begin
     if (/^\s*\#/ =~ line) 
       next
     end
-    parameter, value=line.split(/\s+=\s+/)
+    parameter, value=line.split(/\s*=\s*/)
     #puts "  parameter: '#{parameter}',  value: '#{value}'"
     if (not parameter.nil?) 
       if (value.nil?)
@@ -34,71 +60,143 @@ rescue => err
   err
 end
 
+# Where we're going to collect all the downloaded, renamed files.
+destdir=cfg['destdir'].nil? ? "downloads" : cfg['destdir']
+
+# Where to stash temporary files.  (Note: we'll also append the PID)
+tempdir=cfg['tempdir'].nil? ? "downloads/tmp" : cfg['tempdir']
+
 username=cfg['username']
 password=cfg['password']
+
+
+# What to do at run time.
+download_bills     = cfg['download_bills'].nil? ? 1 : cfg['download_bills'].to_i
+download_cdrs      = cfg['download_cdrs'].nil?  ? 1 : cfg['download_cdrs'].to_i
+
+
+####################################
+####################################
+
+progname=File.basename($0)
+
+
+begin
+  # Command-line options, will override settings in config file.
+
+  def printusage()
+    puts 
+    puts "Usage: #{$0} [options]"
+    puts "Options:" 
+    puts "  --config|-c filename    (configuration file with key=value pairs"
+    puts "  --destdir|-d directory  (for final destination of downloading)"
+    puts "  --tempdir|-t directory  (for temporary staging)"
+    puts "  --username|-u username  (safer to specify in config file)"
+    puts "  --password|-p password  (safer to specify in config file)"
+    puts "  --download_bills"
+    puts "  --download_cdrs"
+    exit(1)
+  end
+
+  opts=GetoptLong.new(
+                      ["--help",     "-h",      GetoptLong::NO_ARGUMENT],
+                      ["--config",   "-c",      GetoptLong::OPTIONAL_ARGUMENT],
+                      ["--destdir",  "-d",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--tempdir",  "-t",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--username", "-u",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--password", "-p",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--download_bills",      GetoptLong::NO_ARGUMENT],
+                      ["--download_cdrs",       GetoptLong::NO_ARGUMENT]
+                    )
+
+  opts.each { |option, value|
+    case option
+    when "--help"
+      printusage()
+    when "--destdir"
+      destdir = value
+    when "--config"
+      # Nothing to do.  Handled earlier.
+    when "--tempdir"
+      tempdir = value
+    when "--username"
+      username = value
+    when "--password"
+      password = value
+    when "--download_bills"
+      download_bills = 1
+    when "--download_cdrs"
+      download_cdrs = 1
+    else
+      puts "Hmmm: option='#{option}'  value='#{value}'"
+    end
+  }
+  if ARGV.length !=0
+    ARGV.each { |arg|
+      puts "Extra arg supplied: '#{arg}'"
+    }
+    printusage()  # Will exit
+  end
+
+rescue => err
+  puts "#{err.class()}: #{err.message}"
+  printusage()  # Will exit
+end
+
+####################################
+####################################
+
+# Sanity check some of the args from config file and/or command line.
 
 if (username.nil? || password.nil?)
   puts "Can't get login credentials from config file."
   exit
 end
 
-
-# Where we're going to collect all the downloaded, renamed files.
-destdir=cfg['destdir'].nil? ? "downloads/comcast" : cfg['destdir']
-
-# Where to stash temporary files.  (Note: we'll also append the PID)
-tempdir=cfg['tempdir'].nil? ? "downloads/tmp" : cfg['tempdir']
+# Add PID to tempdir pathname.
 tempdir=tempdir+"."+Process.pid.to_s
 
-# What to do at run time.
-download_voicemails=cfg['download_voicemails'].nil? ? 1 : cfg['download_voicemails'].to_i
-del_prev_downloaded_voicemails=cfg['del_prev_downloaded_voicemails'].nil? ? 0 : cfg['del_prev_downloaded_voicemails'].to_i
-download_bills=cfg['download_bills'].nil? ? 1 : cfg['download_bills'].to_i
+puts 'Place for temp files: '+tempdir
 
-
-####################################
-####################################
-
-
-
-
-
-progname=File.basename($0)
+if (File.directory?(tempdir))
+  puts "  Directory exists."
+else
+  puts "  Directory ("+tempdir+") does not exist.  Creating."
+  Dir.mkdir(tempdir)
+  # ???? Fail on errors (if a regular file already exists with the name, etc)
+end
 
 
 
-####################################
-####################################
+if (! File.directory?(destdir))
+  puts "Can't find destination directory (#{destdir}).  Exiting.  Perhaps you're running in the wrong directory."
+  exit
+end
 
 ####################################
 ####################################
 
-opts=GetoptLong.new(
-                    ["--help", "-h", GetoptLong::NO_ARGUMENT],
-                    ["--destdir", "-d", GetoptLong::REQUIRED_ARGUMENT],
-                    ["--tempdir", "-t", GetoptLong::REQUIRED_ARGUMENT]
-                    )
+def bell()
+  # Ring a terminal bell, but only if we don't have stdout piped.
+  # (It would make more sense to figure out if we're in a terminal, perhaps)
+  if (File.pipe?($stdout) )
+    # Don't ring a bell; probably sending output to /usr/bin/mail or similar.
+  else
+    puts "\007"  # Ring a bell.
+  end
+end
 
-opts.each { |option, value|
-		case option
-		when "--help"
-                  puts "Usage: use it right"
-                  exit
-		when "--destdir"
-                  destdir = value
-		when "--tempdir"
-                  tempdir = value
-		end
-}
-#   rescue => err
-#         puts "#{err.class()}: #{err.message}"
-#         puts "Usage: -h -u -i -s filename"
-#         exit
- 
 
-#puts "Destdir =#{destdir}"
-#puts "Tempdir =#{tempdir}"
+def disable_pdf_plugin(browser)
 
+  puts 'Going to about:plugins page (to disable plugins, so PDFs save):'
+
+  # This is much simpler!
+  # disable Chrome PDF Viewer
+  browser.goto "about:plugins"
+  browser.span(:text => "Chrome PDF Viewer").parent.parent.parent.a(:text => "Disable", :class => "disable-group-link").click
+
+end
 
 
 months={
@@ -133,78 +231,66 @@ months_abbrev={
 
 
 
+####################################
+####################################
 
-
-
-
-def format_callerid(caller_number)
-
-  # Likely number formats:
-  #   caller_number='+1 613‑914‑6748'   (This is canada, so 'international')
-  #   caller_number='+44 166‍1 248783'
-  #   caller_number='(417) 800‑2006'
-  #   caller_number='(510) 275‑7038'
-  #   caller_number='Anonymous'
-  #   caller_number='Out Of Area'
-
-  #puts "  Caller_number='#{caller_number}'"
-
-  # Some odd characters in the numbers:
-  # '   (   4   0   8   )       3   2   9 342 200 221   8   2   5 342 200 215   3   '
-  # For safety we just remove any non-printable characters.
-  caller_number=caller_number.scan(/[[:print:]]/).join
-
-  if (/^\+[-\d\s]+$/ =~ caller_number)
-    puts "  International number"
-    # But if it's +1, we just format it like a US number.
-    if (/^\+1\s+[-\d\s]+$/ =~ caller_number)
-      puts "  But it's actually a regular north america number."
-      caller_number.sub!(/^\+1\s+/, "")
-      caller_number.gsub!(/[^\d]/, "")
-    else
-      caller_number.sub!(/^\+/, "")
-    end
-  elsif (/^[-\d\s\(\)]+$/ =~ caller_number)
-    puts "  Looks like a domestic US number."
-    # Pull the spaces out (so they don't get replace with '_' later.
-    caller_number.gsub!(/\s/, "")
-  elsif ( (/^Anonymous/i =~ caller_number) || (/^Out Of Area/i =~ caller_number))
-    # Might as well just use this instead.
-    caller_number='0000000000'
-  else
-    # No idea what might make it this far.
-    # Just in case, get rid of anything that might cause trouble.
-    # Just leave letters and numbers, and '_'.  (Space would get stripped out later anyway.)
-    caller_number.gsub!(/[^\da-zA-Z_]/, "")
-  end
-  #
-  # Some operations we might as well apply to all patters, just in case.
-  caller_number.gsub!(/\s/, "_")
-  caller_number.gsub!(/[-\(\)]/, "")
-
-  #puts "  Caller_number='#{caller_number}'"
-
-  return(caller_number)
-end
-
-
-
-
-
-
-
-
-
-
-
-puts progname+' starting'
 
 
 
 if (! File.directory?(destdir))
-  puts 'Destination directory not found ('+destdir+').'
+  puts "Can't find destination directory ("+destdir+").  Exiting.  Perhaps you're running in the wrong directory."
   exit
 end
+
+
+
+
+## Chrome
+##
+profile = Selenium::WebDriver::Chrome::Profile.new
+profile['download.prompt_for_download'] = false
+profile['download.default_directory'] = tempdir
+##
+##profile = Selenium::WebDriver::Firefox::Profile.new
+profile['browser.download.dir'] = tempdir
+profile['browser.download.folderList'] = 2
+profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
+
+#browser = Watir::Browser.new :chrome, :switches => %w[--ignore-certificate-errors --disable-popup-blocking --disable-translate]
+#browser = Watir::Browser.new :chrome, :switches => %w[--disable-plugins]
+#browser = Watir::Browser.new :chrome, :profile => profile
+#browser = Watir::Browser.new :chrome
+#browser = Watir::Browser.new :chrome,  :profile => profile, :switches => %w[--disable-plugins]
+browser = Watir::Browser.new :chrome,  :profile => profile
+
+
+## Chrome
+##
+#profile = Selenium::WebDriver::Chrome::Profile.new
+#profile['download.prompt_for_download'] = false
+##
+##profile = Selenium::WebDriver::Firefox::Profile.new
+#profile['browser.download.folderList'] = 2
+#profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
+
+
+mycontainer = Watir::Container
+
+
+
+disable_pdf_plugin(browser)
+
+
+summary=""
+
+start_time=Time.now
+puts       "#{progname} starting: #{start_time}"
+summary += "#{progname} started:  #{start_time}\n"
+
+
+#############################################
+#      End of the (mostly) boilerplate      #
+#############################################
 
 
 
@@ -234,108 +320,14 @@ Dir.foreach(destdir) { |filename|
   #  existing_voicemails[Regexp.last_match[1]]=1
   end
 } 
+total_new_files = 0
+new_filenames = []
 downloaded_files=0
+statement_count=0
+statement_pdf_save_count=0
+statement_html_save_count=0
+call_record_csv_save_count = 0
 
-puts 'Place for temp files: '+tempdir
-
-if (File.directory?(tempdir))
-  puts "  Directory exists."
-else
-  puts "  Directory ("+tempdir+") does not exist.  Creating."
-  Dir.mkdir(tempdir)
-  # ???????? Fail on errors (if a regular file already exists with the name, etc)
-end
-
-
-## Chrome
-##
-profile = Selenium::WebDriver::Chrome::Profile.new
-profile['download.prompt_for_download'] = false
-profile['download.default_directory'] = tempdir
-##
-##profile = Selenium::WebDriver::Firefox::Profile.new
-profile['browser.download.dir'] = tempdir
-profile['browser.download.folderList'] = 2
-profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
-
-#browser = Watir::Browser.new :chrome, :switches => %w[--ignore-certificate-errors --disable-popup-blocking --disable-translate]
-#browser = Watir::Browser.new :chrome, :switches => %w[--disable-plugins]
-#browser = Watir::Browser.new :chrome, :profile => profile
-#browser = Watir::Browser.new :chrome
-#browser = Watir::Browser.new :chrome,  :profile => profile, :switches => %w[--disable-plugins]
-browser = Watir::Browser.new :chrome,  :profile => profile
-
-
-## Chrome
-##
-#profile = Selenium::WebDriver::Chrome::Profile.new
-#profile['download.prompt_for_download'] = false
-#profile['download.default_directory'] = '/big/emmerson/junk66'
-##
-##profile = Selenium::WebDriver::Firefox::Profile.new
-#profile['browser.download.dir'] = "/big/emmerson/junk66"
-#profile['browser.download.folderList'] = 2
-#profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
-
-
-#browser = Watir::Browser.new :ff
-#browser = Watir::Browser.new :firefox
-#browser = Watir::Browser.new :chrome, :profile => profile
-
-#browser = Watir::Browser.new :chrome
-
-mycontainer = Watir::Container
-
-
-def disable_pdf_plugin(browser)
-
-  puts 'Going to about:plugins page (to disable plugins, so PDFs save):'
-
-  # This is much simpler!
-  # disable Chrome PDF Viewer
-  browser.goto "about:plugins"
-  browser.span(:text => "Chrome PDF Viewer").parent.parent.parent.a(:text => "Disable", :class => "disable-group-link").click
-
-  #  browser.goto 'about:plugins'
-  #  #sleep(1)
-  #  browser.links.each { 
-  #    |l|
-  #
-  #    begin
-  #      
-  #      #puts '  looking for Disable pdf: '+l.text
-  #
-  #      # Just disable all 'Disable' links.  Saves identifying the right one.
-  #      if (l.text =~ /Disable/)
-  #        begin
-  #          #puts '    Disabling'
-  #          l.click
-  #          #sleep(1)
-  #        rescue
-  #          # Sometimes it fails for bizarre reasons.
-  #          #puts 'Rescue 1'
-  #        end
-  #      end
-  #    rescue
-  #      # This is where it seems to bizarrely fail.  Presumably on 'l.text' or 'l.href.to_s' on some links.
-  #      #puts 'Rescue 2'
-  #    end
-  #  }
-
-
-end
-
-
-
-disable_pdf_plugin(browser)
-
-
-
-
-#browser.title == 'WATIR: Schwab download'
-
-#browser.goto 'http://bit.ly/watir-example'
-#browser.goto 'http://bit.ly/watir-example'
 
 
 puts "Going to login page."
@@ -349,8 +341,16 @@ browser.text_field(:name, 'l_passwd').set password
 browser.button(:class, 'sform').click
 
 
+# Yay, we're logged in, or should be.
+# Uh, perhaps check login actually worked???
+puts       "Successful login.\n"
+summary += "Successful login.\n"
+sleep(2)
+
+
+
 # Download the bill statements.
-if (true)
+if (download_bills==1)
 
   browser.goto 'https://my.callcentric.com/bill_statements.php'
 
@@ -376,9 +376,11 @@ if (true)
       key=yyyy+"%02d00" % months_abbrev[mon.downcase]
       puts "      key '#{key}'"
 
+      statement_count += 1
+
       if (existing_pdfs[key]==1)
         puts "      We've already got this file."
-        # (And so we assume we also have the matching html file.  ??????? Check?)
+        # (And so we assume we also have the matching html file.  ???? Check?)
       else
         puts "      Clicking the PDF link"
         c.link(:index, 2).click
@@ -397,17 +399,21 @@ if (true)
     |href|
 
     filename=html_statement_filenames.shift
+    newfilename=File.join(destdir, filename)
 
     browser.goto href
-    File.open(File.join(destdir, filename), 'w+b') { |file| file.puts(browser.html) }
+    File.open(newfilename, 'w+b') { |file| file.puts(browser.html) }
 
-
+    statement_html_save_count += 1
+    total_new_files += 1
+    new_filenames.push(newfilename)
   }
 
 end
 
 
 # Download the transactions statements.
+#?????? Not sure what we should do with these.
 if (true)
   row_number=0
   fieldnames=[]
@@ -461,7 +467,7 @@ end
 
 # Download the call history
 cdr_filenames=[]
-if (true)
+if (download_cdrs==1)
 
   browser.goto 'https://my.callcentric.com/call_history.php'
 
@@ -562,13 +568,9 @@ end
 
 
 if (downloaded_files==0) 
-  puts 'No new files to download.'
-
-  # ???? Some sanity checks, based on actual date, vs listed html
-  # files, vs previously download files.
-
+  puts 'No new files to download/rename.'
 else
-  puts 'Files downloaded: '+downloaded_files.to_s
+  puts 'Files downloaded (for renameing): '+downloaded_files.to_s
   puts 'Going to downloads page to confirm saving files:'
 
   # Pause a bit to make sure everything has finished downloading.
@@ -578,7 +580,7 @@ else
   browser.goto 'chrome://downloads/'
   browser.div(:id, 'downloads-display').buttons.each { 
     |l|
-    puts '  pre-save download links: '+l.text
+    puts '  Pre-save download links: '+l.text
     if l.text =~ /Save/
       puts '    Save the file'
       #puts "\007"  # Ring a bell.
@@ -597,11 +599,11 @@ else
   browser.div(:id, 'downloads-display').links.each { 
     |l|
     
-    puts '  post-save download links: '+l.text
+    puts '  Post-save download links: '+l.text
 
 
 
-    # invoice-201211-2158.pdf  (invoice-YYYYMM-????.pdf)
+    # invoice-201211-2158.pdf  (invoice-YYYYMM-xxxx.pdf)
     #
     if (l.text =~ /^invoice-(\d\d\d\d)(\d\d)-\d+\.pdf$/)
       puts '  downloaded statement pdf links: '+l.text
@@ -621,12 +623,16 @@ else
       puts '    File.rename('+File.join(tempdir, l.text)+', '+newfilename+')'
       File.rename(File.join(tempdir, l.text), newfilename)
       
+      statement_pdf_save_count += 1
+      total_new_files += 1
+      new_filenames.push(newfilename)
+
     end
 
     # Call records
     # cdr_20131201184331.csv  (cdr_YYYYMMDDHHMMSS.csv, utc time of *download*)
     #
-    # Next link is: https://my.callcentric.com/save_calls.php?cdr_start_date=1383264000&cdr_end_date=1385856000&d=91ce653c6a9cf7267e057fcda790b2cf&c=5b72e4dc592b77abae83d89d667c85cc&id=17772715269
+    # Next link is: https://my.callcentric.com/save_calls.php?cdr_start_date=1383264000&cdr_end_date=1385856000&d=91ce6790b2cf&c=5b72e4dc592b77ac85cc&id=17771234567
     # (Contains the date range of the call record search.)
     # Could use this to more safely rename the files.
     #
@@ -634,11 +640,9 @@ else
     if (l.text =~ /^cdr_\d+\.csv$/)
       puts '  downloaded call records csv links: '+l.text
 
-
-
       # Don't have a proper mapping but we have a list of desired filenames.
       # (Might be nice to do some sanity check at least on the number of files we've got!)
-      # ??????????????????
+      # ????????
       # This is more or less essential.  Unreliable is bad.
       # (Even if we have to look in the files to check the contents!)
 
@@ -646,9 +650,11 @@ else
       newfilename=File.join(destdir, cdr_filenames.pop)
 
       puts '    Do:    File.rename('+File.join(tempdir, l.text)+', '+newfilename+')'
-      File.rename(File.join(tempdir, l.text), newfilename)
-      # ???? Might be better if moving cross filesystems.  FileUtils.mv(File.join(tempdir, l.text), newfilename)
+      FileUtils.mv(File.join(tempdir, l.text), newfilename)
 
+      call_record_csv_save_count += 1
+      total_new_files += 1
+      new_filenames.push(newfilename)
     end
 
 
@@ -657,6 +663,23 @@ else
   }
 end
 
+
+summary += "PDF statements downloaded:            #{statement_pdf_save_count}/#{statement_count}\n"
+summary += "HTML statements downloaded:           #{statement_html_save_count}/#{statement_count}\n"
+summary += "CSV CDR files downloaded:             #{call_record_csv_save_count}\n"
+
+
+#??????? This is optimistic/delusional.  Intend to add some sanity checks later.
+summary += "Errors:                               0\n"
+
+summary += "Total number of new files downloaded: #{total_new_files}\n"
+
+new_filenames.each {
+  |filename|
+
+  summary += "New file: #{filename}\n"
+}
+
 puts "Deleting the temporary directory (#{tempdir})"  # Which should be empty
 begin
   Dir.rmdir(tempdir)
@@ -664,27 +687,39 @@ rescue
   puts "Warning: problems deleting directory (#{tempdir})."
 end
 
-puts "\007"  # Ring a bell.
+# Audible alert.  Yeah, it's goofy, but handy for testing.  Ditch it if you don't like it.
+bell()  # Ring a bell.
+
 
 pause_secs=5
-puts progname+' exiting in '+pause_secs.to_s+' seconds...'
-#
-#
-#
-sleep(pause_secs)  # To make sure things have settled down.
 
-#
+puts progname+' logging off in '+pause_secs.to_s+' seconds...'
+sleep(pause_secs)  # To make sure things have settled down.
 # Logout page
 browser.goto 'https://www.callcentric.com/logout.php'
-sleep(5)
 
-
+puts progname+' Closing browser in '+pause_secs.to_s+' seconds...'
+sleep(pause_secs)
 browser.close
 
+end_time=Time.now
+puts       "#{progname} ending: #{end_time}"
+summary += "#{progname} ended:  #{end_time}\n"
 
-puts progname+' ended'
+# Print the summary string we've been building up.
+puts "\n"
+puts "####SUMMARY####\n"
+puts "\n"
+puts summary
+puts "\n"
 
-exit
+__END__
+
+
+
+
+
+
 
 
 

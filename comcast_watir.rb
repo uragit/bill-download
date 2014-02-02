@@ -1,14 +1,44 @@
 #!/usr/bin/ruby
 
+
+
+# Converting the CDR data into a standard format for various automation scripts.
+#   n, the nth call in this
+#   date_time, start time of call (iso.8601, with timezone)
+#   Calling TN (Can be tricky depending on info we can figure out)
+#   Called TN  (Can be tricky depending on info we can figure out)
+#   Call duration (in seconds)
+#   amount       (In $dollars.cents, so tax can be a fraction if needed.)
+#   tax          (In $dollars.cents, so tax can be a fraction if needed.)
+#   total_amount (In $dollars.cents, so tax can be a fraction if needed.)
+#   Rate type (RM45, or whatever the heck)
+#   Call status (completed, for example, or whatever the heck)
+#   Call type (voice, SMS, etc)
+#   Billed TN
+#   Location (Could be to or from, depending on call in or out of the number we own)
+
 require 'rubygems'
 require 'watir-webdriver'
 require 'getoptlong'
 require 'time'
+require 'fileutils'
 
 config_filename='./comcast.conf'
 
 ####################################
 ####################################
+
+# Normally the command-line options are read after the config file
+# so the command-line options can override the config file settings.
+# Except for the '--config filename' setting which we'll need to know
+# now.
+
+ARGV.each_with_index { |arg, i|
+  if ( (arg=='--config') || (arg=='-c') )
+    config_filename=ARGV[i+1]
+  end
+}
+
 
 cfg={}
 begin
@@ -18,7 +48,7 @@ begin
     if (/^\s*\#/ =~ line) 
       next
     end
-    parameter, value=line.split(/\s+=\s+/)
+    parameter, value=line.split(/\s*=\s*/)
     #puts "  parameter: '#{parameter}',  value: '#{value}'"
     if (not parameter.nil?) 
       if (value.nil?)
@@ -33,26 +63,23 @@ rescue => err
   err
 end
 
-username=cfg['username']
-password=cfg['password']
-
-if (username.nil? || password.nil?)
-  puts "Can't get login credentials from config file."
-  exit
-end
-
-
 # Where we're going to collect all the downloaded, renamed files.
-destdir=cfg['destdir'].nil? ? "downloads/comcast" : cfg['destdir']
+destdir=cfg['destdir'].nil? ? "downloads" : cfg['destdir']
 
 # Where to stash temporary files.  (Note: we'll also append the PID)
 tempdir=cfg['tempdir'].nil? ? "downloads/tmp" : cfg['tempdir']
-tempdir=tempdir+"."+Process.pid.to_s
+
+username=cfg['username']
+password=cfg['password']
+
+# In which timezone do you want times interpreted?
+timezone=cfg['timezone'].nil? ? 'PST8PDT' : cfg['timezone']
+# If it ends up blank, US times will be be interpeted as machine local time.
 
 # What to do at run time.
-download_voicemails=cfg['download_voicemails'].nil? ? 1 : cfg['download_voicemails'].to_i
-del_prev_downloaded_voicemails=cfg['del_prev_downloaded_voicemails'].nil? ? 0 : cfg['del_prev_downloaded_voicemails'].to_i
-download_bills=cfg['download_bills'].nil? ? 1 : cfg['download_bills'].to_i
+download_bills      = cfg['download_bills'].nil? ? 1 : cfg['download_bills'].to_i
+download_voicemails = cfg['download_voicemails'].nil? ? 1 : cfg['download_voicemails'].to_i
+del_prev_downloaded_voicemails = cfg['del_prev_downloaded_voicemails'].nil? ? 1 : cfg['del_prev_downloaded_voicemails'].to_i
 
 
 ####################################
@@ -61,151 +88,84 @@ download_bills=cfg['download_bills'].nil? ? 1 : cfg['download_bills'].to_i
 progname=File.basename($0)
 
 
-opts=GetoptLong.new(
-                    ["--help", "-h", GetoptLong::NO_ARGUMENT],
-                    ["--destdir", "-d", GetoptLong::REQUIRED_ARGUMENT],
-                    ["--tempdir", "-t", GetoptLong::REQUIRED_ARGUMENT]
+begin
+  # Command-line options, will override settings in config file.
+
+  def printusage()
+    puts 
+    puts "Usage: #{$0} [options]"
+    puts "Options:" 
+    puts "  --config|-c filename    (configuration file with key=value pairs"
+    puts "  --destdir|-d directory  (for final destination of downloading)"
+    puts "  --tempdir|-t directory  (for temporary staging)"
+    puts "  --username|-u username  (safer to specify in config file)"
+    puts "  --password|-p password  (safer to specify in config file)"
+    puts "  --timezone timezone        (Timezone for interpreting usage timestamps, default PST8PDT)"
+    puts "  --download_bills"
+    puts "  --download_voicemails"
+    exit(1)
+  end
+
+  opts=GetoptLong.new(
+                      ["--help",     "-h",      GetoptLong::NO_ARGUMENT],
+                      ["--config",   "-c",      GetoptLong::OPTIONAL_ARGUMENT],
+                      ["--destdir",  "-d",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--tempdir",  "-t",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--username", "-u",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--password", "-p",      GetoptLong::REQUIRED_ARGUMENT],
+                      ["--timezone",            GetoptLong::REQUIRED_ARGUMENT],
+                      ["--download_bills",      GetoptLong::NO_ARGUMENT],
+                      ["--download_voicemails", GetoptLong::NO_ARGUMENT]
                     )
 
-opts.each { |option, value|
-		case option
-		when "--help"
-                  puts "Usage: use it right"
-                  exit
-		when "--destdir"
-                  destdir = value
-		when "--tempdir"
-                  tempdir = value
-		end
-}
-#   rescue => err
-#         puts "#{err.class()}: #{err.message}"
-#         puts "Usage: -h -u -i -s filename"
-#         exit
- 
-
-#puts "Destdir =#{destdir}"
-#puts "Tempdir =#{tempdir}"
-
-
-
-months={
-  'january'   =>  1,
-  'february'  =>  2,
-  'march'     =>  3,
-  'april'     =>  4,
-  'may'       =>  5,
-  'june'      =>  6,
-  'july'      =>  7,
-  'august'    =>  8,
-  'september' =>  9,
-  'october'   => 10,
-  'november'  => 11,
-  'december'  => 12
-}
-
-
-
-
-
-
-
-def format_callerid(caller_number)
-
-  # Likely number formats:
-  #   caller_number='+1 613‑914‑6748'   (This is canada, so 'international')
-  #   caller_number='+44 166‍1 248783'
-  #   caller_number='(417) 800‑2006'
-  #   caller_number='(510) 275‑7038'
-  #   caller_number='Anonymous'
-  #   caller_number='Out Of Area'
-
-  #puts "  Caller_number='#{caller_number}'"
-
-  # Some odd characters in the numbers:
-  # '   (   4   0   8   )       3   2   9 342 200 221   8   2   5 342 200 215   3   '
-  # For safety we just remove any non-printable characters.
-  caller_number=caller_number.scan(/[[:print:]]/).join
-
-  if (/^\+[-\d\s]+$/ =~ caller_number)
-    puts "  International number"
-    # But if it's +1, we just format it like a US number.
-    if (/^\+1\s+[-\d\s]+$/ =~ caller_number)
-      puts "  But it's actually a regular north america number."
-      caller_number.sub!(/^\+1\s+/, "")
-      caller_number.gsub!(/[^\d]/, "")
+  opts.each { |option, value|
+    case option
+    when "--help"
+      printusage()
+    when "--destdir"
+      destdir = value
+    when "--config"
+      # Nothing to do.  Handled earlier.
+    when "--tempdir"
+      tempdir = value
+    when "--username"
+      username = value
+    when "--password"
+      password = value
+    when "--timezone"
+      timezone = value
+    when "--download_bills"
+      download_bills = 1
+    when "--download_voicemails"
+      download_voicemail = 1
     else
-      caller_number.sub!(/^\+/, "")
+      puts "Hmmm: option='#{option}'  value='#{value}'"
     end
-  elsif (/^[-\d\s\(\)]+$/ =~ caller_number)
-    puts "  Looks like a domestic US number."
-    # Pull the spaces out (so they don't get replace with '_' later.
-    caller_number.gsub!(/\s/, "")
-  elsif ( (/^Anonymous/i =~ caller_number) || (/^Out Of Area/i =~ caller_number))
-    # Might as well just use this instead.
-    caller_number='0000000000'
-  else
-    # No idea what might make it this far.
-    # Just in case, get rid of anything that might cause trouble.
-    # Just leave letters and numbers, and '_'.  (Space would get stripped out later anyway.)
-    caller_number.gsub!(/[^\da-zA-Z_]/, "")
+  }
+  if ARGV.length !=0
+    ARGV.each { |arg|
+      puts "Extra arg supplied: '#{arg}'"
+    }
+    printusage()  # Will exit
   end
-  #
-  # Some operations we might as well apply to all patters, just in case.
-  caller_number.gsub!(/\s/, "_")
-  caller_number.gsub!(/[-\(\)]/, "")
 
-  #puts "  Caller_number='#{caller_number}'"
-
-  return(caller_number)
+rescue => err
+  puts "#{err.class()}: #{err.message}"
+  printusage()  # Will exit
 end
 
+####################################
+####################################
 
+# Sanity check some of the args from config file and/or command line.
 
-
-
-
-
-
-
-
-
-puts progname+' starting'
-
-
-
-if (! File.directory?(destdir))
-  puts 'Destination directory not found ('+destdir+').'
+if (username.nil? || password.nil?)
+  puts "Can't get login credentials from config file."
   exit
 end
 
-
-
-# Let's collect all the files we've already got downloaded (or scanned)
-#
-existing_pdfs={};
-existing_voicemails={};
-existing_voice_calls={};
-existing_voice_calls_pdf={};
-filename_map={};
-#
-puts 'Listing existing files in download directory:'
-Dir.foreach(destdir) { |filename|
-  if    (filename =~ /^comcast_statement.d(\d+).pdf$/) 
-    #puts '  Filename: '+filename
-    existing_pdfs[Regexp.last_match[1]]=1
-  elsif (filename =~ /^comcast_statement.voice_calls.d(\d+).html$/) 
-    existing_voice_calls[Regexp.last_match[1]]=1
-  elsif (filename =~ /^comcast_statement.voice_calls.d(\d+).pdf$/) 
-    existing_voice_calls_pdf[Regexp.last_match[1]]=1
-  elsif (filename =~ /^voicemail\.(d[\d_A-Z]+\.)[^\.]+\.(from[\d_]+)\..*\.mp3$/) 
-    key=Regexp.last_match[1]+Regexp.last_match[2]
-    puts "  Existing voicemail file, key is: "+key
-    existing_voicemails[key]=1
-  end
-} 
-downloaded_files=0
-
+# Add PID to tempdir pathname.
+tempdir=tempdir+"."+Process.pid.to_s
 
 puts 'Place for temp files: '+tempdir
 
@@ -214,48 +174,29 @@ if (File.directory?(tempdir))
 else
   puts "  Directory ("+tempdir+") does not exist.  Creating."
   Dir.mkdir(tempdir)
-  # ???????? Fail on errors (if a regular file already exists with the name, etc)
+  # ????? Fail on errors (if a regular file already exists with the name, etc)
 end
 
 
-## Chrome
-##
-profile = Selenium::WebDriver::Chrome::Profile.new
-profile['download.prompt_for_download'] = false
-profile['download.default_directory'] = tempdir
-##
-##profile = Selenium::WebDriver::Firefox::Profile.new
-profile['browser.download.dir'] = tempdir
-profile['browser.download.folderList'] = 2
-profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
-
-#browser = Watir::Browser.new :chrome, :switches => %w[--ignore-certificate-errors --disable-popup-blocking --disable-translate]
-#browser = Watir::Browser.new :chrome, :switches => %w[--disable-plugins]
-#browser = Watir::Browser.new :chrome, :profile => profile
-#browser = Watir::Browser.new :chrome
-#browser = Watir::Browser.new :chrome,  :profile => profile, :switches => %w[--disable-plugins]
-browser = Watir::Browser.new :chrome,  :profile => profile
+if (! File.directory?(destdir))
+  puts "Can't find destination directory (#{destdir}).  Exiting.  Perhaps you're running in the wrong directory."
+  exit
+end
 
 
-## Chrome
-##
-#profile = Selenium::WebDriver::Chrome::Profile.new
-#profile['download.prompt_for_download'] = false
-#profile['download.default_directory'] = '/big/emmerson/junk66'
-##
-##profile = Selenium::WebDriver::Firefox::Profile.new
-#profile['browser.download.dir'] = "/big/emmerson/junk66"
-#profile['browser.download.folderList'] = 2
-#profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
 
+####################################
+####################################
 
-#browser = Watir::Browser.new :ff
-#browser = Watir::Browser.new :firefox
-#browser = Watir::Browser.new :chrome, :profile => profile
-
-#browser = Watir::Browser.new :chrome
-
-mycontainer = Watir::Container
+def bell()
+  # Ring a terminal bell, but only if we don't have stdout piped.
+  # (It would make more sense to figure out if we're in a terminal, perhaps)
+  if (File.pipe?($stdout) )
+    # Don't ring a bell; probably sending output to /usr/bin/mail or similar.
+  else
+    puts "\007"  # Ring a bell.
+  end
+end
 
 
 def disable_pdf_plugin(browser)
@@ -298,37 +239,266 @@ end
 
 
 
+months={
+  'january'   =>  1,
+  'february'  =>  2,
+  'march'     =>  3,
+  'april'     =>  4,
+  'may'       =>  5,
+  'june'      =>  6,
+  'july'      =>  7,
+  'august'    =>  8,
+  'september' =>  9,
+  'october'   => 10,
+  'november'  => 11,
+  'december'  => 12
+}
+
+
+
+
+
+
+
+def format_callerid(caller_number)
+
+  # Likely number formats:
+  #   caller_number='+1 613‑555‑6748'   (This is canada, so 'international')
+  #   caller_number='+44 181‍1 555783'
+  #   caller_number='(417) 555‑2006'
+  #   caller_number='(510) 555‑7038'
+  #   caller_number='Anonymous'
+  #   caller_number='Out Of Area'
+
+  #puts "  Caller_number='#{caller_number}'"
+
+  # Some odd characters in the numbers:
+  # '   (   4   0   8   )       5   5   5 342 200 221   1   2   5 342 200 215   7   '
+  # For safety we just remove any non-printable characters.
+  # (This has probably already been cleaned up by the time it gets here.)
+  caller_number=caller_number.scan(/[[:print:]]/).join
+
+  if (/^\+[-\d\s]+$/ =~ caller_number)
+    puts "  International number"
+    # But if it's +1, we just format it like a US number.
+    if (/^\+1\s+[-\d\s]+$/ =~ caller_number)
+      puts "  But it's actually a regular north america number."
+      caller_number.sub!(/^\+1\s+/, "")
+      caller_number.gsub!(/[^\d]/, "")
+    else
+      caller_number.sub!(/^\+/, "")
+    end
+  elsif (/^[-\d\s\(\)]+$/ =~ caller_number)
+    puts "  Looks like a domestic US number."
+    # Pull the spaces out (so they don't get replace with '_' later.
+    caller_number.gsub!(/\s/, "")
+  elsif ( (/^Anonymous/i =~ caller_number) || (/^Out Of Area/i =~ caller_number))
+    # Might as well just use this instead.
+    caller_number='0000000000'
+  else
+    # No idea what might make it this far.
+    # Just in case, get rid of anything that might cause trouble.
+    # Just leave letters and numbers, and '_'.  (Space would get stripped out later anyway.)
+    caller_number.gsub!(/[^\da-zA-Z_]/, "")
+  end
+  #
+  # Some operations we might as well apply to all patters, just in case.
+  caller_number.gsub!(/\s/, "_")
+  caller_number.gsub!(/[-\(\)]/, "")
+
+  #puts "  Caller_number='#{caller_number}'"
+
+  return(caller_number)
+end
+
+
+
+
+
+####################################
+####################################
+
+
+
+
+# Trying to fix:
+#/var/lib/gems/1.8/gems/selenium-webdriver-2.31.0/lib/selenium/webdriver/remote/capabilities.rb:141:in `json_create': undefined method `downcase' for nil:NilClass (NoMethodError)
+#
+#cap = Selenium::WebDriver::Remote::Capabilities.linux
+#cap['acceptSslCerts'] = true
+#driver = Selenium::WebDriver.for :linux, :desired_capabilities => cap
+
+
+## Chrome
+##
+profile = Selenium::WebDriver::Chrome::Profile.new
+profile['download.prompt_for_download'] = false
+profile['download.default_directory'] = tempdir
+##
+##profile = Selenium::WebDriver::Firefox::Profile.new
+profile['browser.download.dir'] = tempdir
+profile['browser.download.folderList'] = 2
+profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
+
+#browser = Watir::Browser.new :chrome, :switches => %w[--ignore-certificate-errors --disable-popup-blocking --disable-translate]
+#browser = Watir::Browser.new :chrome, :switches => %w[--disable-plugins]
+#browser = Watir::Browser.new :chrome, :profile => profile
+#browser = Watir::Browser.new :chrome
+#browser = Watir::Browser.new :chrome,  :profile => profile, :switches => %w[--disable-plugins]
+browser = Watir::Browser.new :chrome,  :profile => profile
+
+
+## Chrome
+##
+#profile = Selenium::WebDriver::Chrome::Profile.new
+#profile['download.prompt_for_download'] = false
+#profile['download.default_directory'] = "/home/download"
+##
+##profile = Selenium::WebDriver::Firefox::Profile.new
+#profile['browser.download.dir'] = "/home/download"
+#profile['browser.download.folderList'] = 2
+#profile['browser.helperApps.neverAsk.saveToDisk'] = "application/pdf"
+
+
+#browser = Watir::Browser.new :ff
+#browser = Watir::Browser.new :firefox
+#browser = Watir::Browser.new :chrome, :profile => profile
+
+#browser = Watir::Browser.new :chrome
+
+mycontainer = Watir::Container
+
+
 disable_pdf_plugin(browser)
 
 
 
+summary=""
 
-#browser.title == 'WATIR: Schwab download'
+start_time=Time.now
+puts       "#{progname} starting: #{start_time}"
+summary += "#{progname} started:  #{start_time}\n"
+
+
+
+#############################################
+#      End of the (mostly) boilerplate      #
+#############################################
+
+
+
+
+# Let's collect all the files we've already got downloaded (or scanned)
+#
+existing_pdfs={};
+existing_voicemails={};
+existing_voice_calls_html={};
+existing_voice_calls_csv={};
+existing_voice_calls_pdf={};
+filename_map={};
+#
+puts 'Listing existing files in download directory:'
+Dir.foreach(destdir) { |filename|
+  if    (filename =~ /^comcast_statement.d(\d+).pdf$/) 
+    #puts '  Filename: '+filename
+    existing_pdfs[Regexp.last_match[1]]=1
+  elsif (filename =~ /^comcast_statement.voice_calls.d(\d+).html$/) 
+    existing_voice_calls_html[Regexp.last_match[1]]=1
+  elsif (filename =~ /^comcast_statement.voice_calls.d(\d+).csv$/) 
+    existing_voice_calls_csv[Regexp.last_match[1]]=1
+  elsif (filename =~ /^comcast_statement.voice_calls.d(\d+).pdf$/) 
+    existing_voice_calls_pdf[Regexp.last_match[1]]=1
+  elsif (filename =~ /^voicemail\.(d[\d_A-Z]+\.)[^\.]+\.(from[\d_]+)\..*\.mp3$/) 
+    key=Regexp.last_match[1]+Regexp.last_match[2]
+    puts "  Existing voicemail file, key is: "+key
+    existing_voicemails[key]=1
+  end
+} 
+downloaded_files=0
+
+
+
+#browser.title == 'WATIR: download'
 
 #browser.goto 'http://bit.ly/watir-example'
-#browser.goto 'http://bit.ly/watir-example'
 
 
-puts "Going to login page."
+logging_in=true
+attempts=0
+while (logging_in)
 
-browser.goto 'https://customer.comcast.com/secure/Home.aspx'
+  attempts += 1
+  if (attempts > 3)
+    puts "Too many login failures."
+    #bell()  # Ring a bell.
+    exit
+  end
+  
+  puts "Attempt #{attempts} at logging in.  Going to login screen."
+
+  begin
+    browser.goto 'https://customer.comcast.com/secure/Home.aspx'
 
 
-puts "  Filling in fields and clicking on sign-in."
+    puts "  Filling in fields and clicking on sign-in."
 
-browser.text_field(:index, 0).set username
-browser.text_field(:index, 1).set password
+    browser.text_field(:index, 0).set username
+    browser.text_field(:index, 1).set password
 
-browser.button(:id, "sign_in").click
+    browser.button(:id, "sign_in").click
+    # Their stupid overlay causes things to timeout here, because, despite successful login, the page never loads
+    # On the other hand, sometimes, the page loads despite the overlay, and everything is fine.
+
+    puts "  Clicked on sign_in button."
+
+    if (browser.div(:class, 'overlay-content').link().exists?)
+      puts "  Stupid overlay detected, but the login click returned without timeout, and it means login was successful."
+    end
+
+    # Optimistic????? Test
+    logging_in=false
+
+  rescue Exception => e
+    puts "  Something went wrong:"+e.message
+    if (e.message=='execution expired')
+      puts "  Execution expired, probably due to their stupid overlay"
+
+      # "Activate Now" overlay muppetry.
+      #bell()  # Ring a bell.
+      #sleep(15)
+      if (browser.div(:class, 'overlay-content').link().exists?)
+        puts "  Stupid overlay detected, but at least it means login was successful."
+        # Could also just ignore it, as we are in fact logged in now.
+        #browser.div(:class, 'overlay-content').link().click
+        # In fact, don't want to click it.  Don't want to activate.
+      end
+
+      # Optimistic????? Test
+      logging_in=false
+    end
+  end
+
+end
 
 
-
+summary += "Successful login.\n"
 
 voicemail_filenames={}
 renamed_mp3s = 0
+total_voicemails = 0
+deleted_voicemails = 0
 renamed_voicemail_ids={}
 my_tn=""
 failed_voicemail_ids=[]
+
+total_statements = 0
+renamed_statement_pdfs = 0
+renamed_voice_usage_pdfs = 0
+voice_usage_htmls = 0
+voice_usage_csvs = 0
+total_new_files = 0
+new_filenames = []
+
 
 
 # Might have to pass through more than once; the voicemail download can be a bit dodgy.
@@ -345,23 +515,35 @@ while (tries_left>0)
 
     if (loop_count==1) # Only on the first pass
       # Find the phone number.
-      number_dropdown=browser.div(:id, "number_switcher")
-      #????????????? If the next line fails, we probably didn't get logged in.
-      #  /usr/lib64/ruby/gems/1.8/gems/watir-webdriver-0.5.2/lib/watir-webdriver/elements/element.rb:359:in `assert_exists': unable to locate element, using {:tag_name=>"div", :id=>"number_switcher"} (Watir::Exception::UnknownObjectException)
-      #
-      number_dropdown.buttons.each {
-        |b|
-        # The first one will have the text of the selected options.
-        # Any subsequent ones will have blank text, but contain a div
-        # that contains the text.  For now, we're only interested in
-        # the first phone number so it will do for now.
+      # If there's more than one number on the account, there'll be a drop-down menu
+      number_text=''
+      if (browser.div(:id, "number_switcher").exists?)
+        number_dropdown=browser.div(:id, "number_switcher")
+        #????? If the next line fails, we probably didn't get logged in.
+        #  /usr/lib64/ruby/gems/1.8/gems/watir-webdriver-0.5.2/lib/watir-webdriver/elements/element.rb:359:in `assert_exists': unable to locate element, using {:tag_name=>"div", :id=>"number_switcher"} (Watir::Exception::UnknownObjectException)
+        #
+        number_dropdown.buttons.each {
+          |b|
+          # The first one will have the text of the selected options.
+          # Any subsequent ones will have blank text, but contain a div
+          # that contains the text.  For now, we're only interested in
+          # the first phone number so it will do for now.
+          number_text=b.text
+        }
+      else
+        # There's just a single phone number on the account.
+        number_text=browser.div(:id, "single_number").text
+      end
 
-        puts "Button!"+b.text
-        if (my_tn=="")
-          puts "Setting my_tn to '#{b.text}'."
-          my_tn=b.text.gsub(/[^\d]/,  "")  # Only the digits.
-        end
-      }
+      # '   (   4   0   8   )       5   5   5 342 200 221   1   2   5 342 200 215   7   '
+      # For safety we just remove any non-printable characters.
+      #
+      number_text=number_text.scan(/[[:print:]]/).join
+      puts "Number!"+number_text
+      if (my_tn=="")
+        puts "Setting my_tn to '#{number_text}'."
+        my_tn=number_text.gsub(/[^\d]/,  "")  # Only the digits.
+      end
     end
 
     message_table=browser.table(:id, "message_list")
@@ -379,32 +561,56 @@ while (tries_left>0)
     #sleep(2)  # In case it needs some time to settle.
 
     puts "Let's go through the voicemail."
-    # The first time, we just use the index of the voicemail rows.
+    # The first time, we run through the list of voicemails to get the element
+    # id of each voicemail row.
+    all_voicemail_ids=[]
     if (loop_count==1)
       len=message_table.rows.length
+
+      0.upto(len - 1) {
+        |i|
+
+        voicemail_row=message_table.row(:index, i)
+
+        if (i==0) 
+          puts "This is the first message."
+          puts "Cell: #{voicemail_row.cell(:index, 0).text}"
+          if (voicemail_row.cell(:index, 0).text =~ /You have no voicemail messages/)
+            puts "No voicemail messages."
+            tries_left=0  # To get out of the outer loop too.  On first loop, no voicemail to get; no need to loop.
+            len=0
+            break
+          end
+        end
+
+        voicemail_id=voicemail_row.id # This seems to be the only way to relate back to the generated file.
+        all_voicemail_ids.push(voicemail_id)
+      }
+      total_voicemails=len
+
     else
       # Subsequent efforts, we use the list of id's of the failed rows.
       len=failed_voicemail_ids.length
     end
 
     # Need to store a list of filenames for remapping
-    #0.upto(10) {
     0.upto(len - 1) {
       |i|
 
+      puts ""
       if (loop_count==1)
         # Going through the whole list by index.
-        puts "Going for message with index #{i.to_s}.  Clicking on the list item."
-        voicemail_row=message_table.row(:index, i)
-        voicemail_id=voicemail_row.id # This seems to be the only way to relate back to the generated file.
+        voicemail_id=all_voicemail_ids[i]
+        puts "Going for message with index #{i.to_s}, voicemail_id=#{voicemail_id}.  Clicking on the list item."
+        #voicemail_id=voicemail_row.id # This seems to be the only way to relate back to the generated file.
       else
         # Going through previous failures by id.
-        voicemail_id=failed_voicemail_ids.shift
         puts "Going for message with id='#{voicemail_id.to_s}'.  Clicking on the list item."
-        voicemail_row=message_table.row(:id, voicemail_id)
+        voicemail_id=failed_voicemail_ids.shift
         
       end
 
+      voicemail_row=message_table.row(:id, voicemail_id)
       voicemail_row.click
       
 
@@ -424,8 +630,12 @@ while (tries_left>0)
       #voicemail_div.divs.each do |d|
       #  puts "  Div: "+d.to_s
       #end
-      name_text=voicemail_div.div(:class, 'name_text').text
-      contact_text=voicemail_div.div(:class, 'contact_token').text
+      #
+      # Some odd characters in the name or contact (if there's a number, not a name here):
+      # '   (   4   0   8   )       5   5   5 342 200 221   1   2   5 342 200 215   7   '
+      # For safety we just remove any non-printable characters.
+      name_text=voicemail_div.div(:class, 'name_text').text.scan(/[[:print:]]/).join
+      contact_text=voicemail_div.div(:class, 'contact_token').text.scan(/[[:print:]]/).join
       date_text=voicemail_div.div(:class, 'date').text
       location_text=voicemail_div.div(:class, 'location_text').text
 
@@ -502,10 +712,11 @@ while (tries_left>0)
         # Should we delete it from their web server.
         if (del_prev_downloaded_voicemails==1)
           # Click the delete button.
-          puts "\007"  # Ring a bell.
+          bell()  # Ring a bell.
           delete_button=voicemail_div.button(:text, 'Delete message')
           puts "      The button:"+delete_button.text
           puts "      Clicking it..."
+          deleted_voicemails += 1
           delete_button.click
           sleep(5)  # In case it needs some time to settle.
         end
@@ -541,7 +752,7 @@ while (tries_left>0)
 
     # Press the 'view more' button to see all available bills.
     # Sometimes this fails because the link isn't visible.
-    # ?????????? Would be better to test for existence of element.
+    # ?????? Would be better to test for existence of element.
     #
     clicked=0
     click_attempts=1
@@ -559,6 +770,7 @@ while (tries_left>0)
         click_attempts += 1
         if (click_attempts > 4)
           puts "Giving up."
+          #bell()  # Ring a bell.
           exit
         end
       end
@@ -570,8 +782,10 @@ while (tries_left>0)
     puts "  Listing bills."
 
     # Just grabbing the main PDFs of the monthly statements.  This bit is straightforward.
+    
     browser.div(:id, 'past-bills').links.each { 
       |l|
+      total_statements += 1
       
       #puts l.href.to_s
 
@@ -616,7 +830,7 @@ while (tries_left>0)
       edited=o.text.gsub(/\s+/, " ")
       puts '  i='+i.to_s+'    '+o.text+'  '+edited
 
-      # puts "\007"  # Ring a bell.
+      #bell()  # Ring a bell.
 
       if (edited =~ /UnBilled Activity/) 
         puts "    We skip any attempted download of the UnBilled Activity selection"
@@ -657,16 +871,113 @@ while (tries_left>0)
       key= "%04d%02d%02d" % [ yyyy,mm,dd ]
       puts '    Found: "'+datestring+'"   Key: "'+key+'"'
 
-      if (existing_voice_calls[key]==1)
-        puts "      We've already got this voice calls html file."
+      if (existing_voice_calls_html[key]==1)
+        puts "      We've already got this voice usage html file."
       else
         filename=File.join(destdir, 'comcast_statement.voice_calls.d'+key+'.html')
         puts "      We don't already have this voice calls html file (downloading): "+filename
         File.open(filename, 'w') {|f| f.write(browser.html) }
+        voice_usage_htmls += 1
+        total_new_files += 1
+        new_filenames.push(filename)
+      end
+
+      if (existing_voice_calls_csv[key]==1)
+        puts "      We've already got this voice usage csv file."
+      else
+        csv_filename=File.join(destdir, 'comcast_statement.voice_calls.d'+key+'.csv')
+        csv_file=File.open(csv_filename, 'w')
+
+        # Hmmm, no names/id.  Should probably scan all the tables to find one
+        # that looks like the usage table.
+        usage_table=browser.table().table(:index, 5)
+
+        puts "Parsing call-record table:"
+        n=0;
+        phone_number=''
+        table_header_found=false
+        usage_table.rows.each_with_index {
+          |r, i|
 
 
-        # Let's see if we can parse out the call records.
-        # (Nah, write a separate parser to pull out the html.)
+          #puts "  Row#{i}:"
+          r.cells.each {
+            |c|
+
+            #puts "    '#{c.text.strip}'"
+          }
+
+          if ( (r.cells[0].text.strip == 'Date') &&  (r.cells[1].text.strip == 'Time') )
+            #puts "  This is the table header."
+            table_header_found=true  #?????? Use this for confirming we've got the right table.
+            # ['Date', 'Time', 'Place', 'Number', 'Minutes', '', '', 'Amount']
+          elsif (r.cells[0].text.strip=='')
+            #puts "  This is a line with empty first field."
+          elsif (r.cells[0].text.strip =~ /^Call Details/i)
+            #puts "  This is the Call Details line."
+            # Which is also a good way to know we've got the right table.
+            # Also a good place to know what our phone number is!
+            #   'Call Details for (508) 555-1234'
+            # If multiple lines, could have multiple tables, or just rows like this.  Not sure.
+            r.cells[0].text.strip =~ /^Call Details for ([-\d \(\)]+)/i
+            phone_number = Regexp.last_match[1].gsub(/\D/, '')
+            puts "    Phone number is: '#{phone_number}'"
+          elsif (r.cells[0].text.strip =~ /^Total/i)
+            #puts "  This is a total line."
+          elsif (r.cells[0].text.strip =~ /^[\d\/]+$/i)
+            #puts "  This is a usage line."
+            cell_list = r.cells
+
+            date=cell_list[0].text.strip
+            time=cell_list[1].text.strip
+            datetime=date+" "+time
+
+            # Throw in a timezone if we have one (and the time doesn't already have one (here it doesn't))
+            # If no timezone exists, it might get tagged zulu.  Nah, probably whatever localtime is.
+            if (timezone != '') 
+              datetime = datetime+" "+timezone
+            end
+            t=Time.parse(datetime)
+            #puts "      time.parse: "+t.strftime("  %Y%m%d %H%M %Z")
+            #if (timezone != '') 
+            #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M %Z")
+            #else
+            #  yyyymmdd_hhmm_tz=t.strftime("%Y-%m-%d %H:%M")
+            #end
+            #datetime = yyyymmdd_hhmm_tz
+            datetime = t.iso8601
+
+            call_location=cell_list[2].text.strip
+            tn=cell_list[3].text.strip.gsub(/\D/, '')
+            minutes=cell_list[4].text.strip
+            # Then two empty fields.
+            amount=cell_list[7].text.strip
+
+            n += 1
+            seconds=(minutes.to_i)*60
+            rate_type=''
+            status=''
+            call_type='voice'
+            billed_tn=phone_number
+            calling_tn=phone_number
+            called_tn=tn
+
+            fields=[n, datetime, calling_tn, called_tn, seconds.to_s, amount, '0.00', amount, rate_type, status, call_type, billed_tn, call_location]
+            puts "      "+fields.join(",")
+            csv_file.puts fields.join("\t") # Yeah, it's tab-delimited, not CSV.  So sue me.
+
+          else
+            #?????? Perhaps handle better.
+            puts "Unknown type of row in usage table."
+            exit
+          end
+
+        }
+        csv_file.close
+        voice_usage_csvs += 1
+        total_new_files += 1
+        new_filenames.push(filename)
+
       end
 
       # Might as well grab the pdf of the voicecalls while we're here.
@@ -692,10 +1003,6 @@ while (tries_left>0)
 
   if (downloaded_files==0) 
     puts 'No new files to download.'
-
-    # ???? Some sanity checks, based on actual date, vs listed html
-    # files, vs previously download files.
-
   else
     puts 'Files downloaded: '+downloaded_files.to_s
     puts 'Going to downloads page to confirm saving files:'
@@ -712,7 +1019,7 @@ while (tries_left>0)
       puts '  download links: '+l.text
       if l.text =~ /Save/
         puts '    Save the file'
-        #puts "\007"  # Ring a bell.
+        #bell()  # Ring a bell.
         begin
           l.click
         rescue
@@ -748,8 +1055,14 @@ while (tries_left>0)
 
           newfilename=File.join(destdir, 'comcast_statement.d'+key+'.pdf')
 
-          puts '    File.rename('+File.join(tempdir, l.text)+', '+newfilename+')'
-          File.rename(File.join(tempdir, l.text), newfilename)
+          #puts '    File.rename('+File.join(tempdir, l.text)+', '+newfilename+')'
+          #File.rename(File.join(tempdir, l.text), newfilename)
+          puts "    Do:    FileUtils.mv('#{File.join(tempdir, l.text)}', '#{newfilename}')"
+          FileUtils.mv(File.join(tempdir, l.text), newfilename)
+
+          renamed_statement_pdfs += 1
+          total_new_files += 1
+          new_filenames.push(newfilename)
           
         end
         # ComcastFebruary_12 (1).pdf
@@ -777,8 +1090,14 @@ while (tries_left>0)
 
           newfilename=File.join(destdir, 'comcast_statement.voice_calls.d'+filename_map[remap_key]+'.pdf')
 
-          puts '    Do:    File.rename('+File.join(tempdir, l.text)+', '+newfilename+')'
-          File.rename(File.join(tempdir, l.text), newfilename)
+          #puts '    Do:    File.rename('+File.join(tempdir, l.text)+', '+newfilename+')'
+          #File.rename(File.join(tempdir, l.text), newfilename)
+          puts "    Do:    FileUtils.mv('#{File.join(tempdir, l.text)}', '#{newfilename}')"
+          FileUtils.mv(File.join(tempdir, l.text), newfilename)
+
+          renamed_voice_usage_pdfs += 1
+          total_new_files += 1
+          new_filenames.push(newfilename)
 
         end
       end
@@ -796,7 +1115,7 @@ while (tries_left>0)
 
         if ( (voicemail_id.nil?) || (voicemail_id=='') || (saved_mp3_filename=='') )
           puts "HORRIFIC FILE RENAMING PROBLEM.  voicemail_id='#{voicemail_id}', renamed_mp3s=#{renamed_mp3s}"
-          # ?????????? Do something terrible.
+          # ?????? Do something terrible.
         else
 
           puts "  download voicemail mp3 link (count=#{renamed_mp3s}, id=#{voicemail_id}): "+saved_mp3_filename
@@ -808,13 +1127,15 @@ while (tries_left>0)
 
             newfilename=File.join(destdir, voicemail_filenames[voicemail_id])
             
-            puts '    Do:    File.rename('+File.join(tempdir, saved_mp3_filename)+', '+newfilename+')'
-            
-            File.rename(File.join(tempdir, saved_mp3_filename), newfilename)
-            # ???? Might be better if moving cross filesystems.  FileUtils.mv(File.join(tempdir, l.text), newfilename)
-            
+            #puts '    Do:    File.rename('+File.join(tempdir, saved_mp3_filename)+', '+newfilename+')'
+            #File.rename(File.join(tempdir, saved_mp3_filename), newfilename)
+            puts "    Do:    FileUtils.mv('#{File.join(tempdir, saved_mp3_filename)}', '#{newfilename}')"
+            FileUtils.mv(File.join(tempdir, saved_mp3_filename), newfilename)
+
             renamed_voicemail_ids[voicemail_id]=1
             renamed_mp3s += 1
+            total_new_files += 1
+            new_filenames.push(newfilename)
           end
         end
 
@@ -843,7 +1164,39 @@ while (tries_left>0)
   # We keep just a count of the files downloaded in each pass, so reset here.
   downloaded_files=0
 
+  puts "Pausing to let any network/file operations to settle."
+  sleep(5)
 end
+
+
+if (download_voicemails==1)
+  summary += "Voicemail mp3 files downloaded:       #{renamed_mp3s}/#{total_voicemails}\n"
+  if (del_prev_downloaded_voicemails==1)
+    summary += "Voicemails deleted:                   #{deleted_voicemails}/#{total_voicemails}\n"
+  end
+else
+  summary += "download_voicemail option not set.\n"
+end
+
+if (download_bills==1)
+  summary += "Statement PDFs downloaded:            #{renamed_statement_pdfs}/#{total_statements}\n"
+  summary += "Voice usage PDFs downloaded:          #{renamed_voice_usage_pdfs}/#{total_statements}\n"
+  summary += "Voice usage CSVs downloaded:          #{voice_usage_csvs}/#{total_statements}\n"
+  summary += "Voice usage HTMLs downloaded:         #{voice_usage_htmls}/#{total_statements}\n"
+else
+  summary += "Download_bills option not set.\n"
+end
+
+#?????? This is optimistic.
+summary += "Errors:                               0\n"
+
+summary += "Total number of new files downloaded: #{total_new_files}\n"
+
+new_filenames.each {
+  |filename|
+
+  summary += "New file: #{filename}\n"
+}
 
 puts "Deleting the temporary directory (#{tempdir})"  # Which should be empty
 begin
@@ -852,21 +1205,13 @@ rescue
   puts "Warning: problems deleting directory (#{tempdir})."
 end
 
-puts "\007"  # Ring a bell.
-sleep(1)
-puts "\007"  # Ring a bell.
-sleep(1)
-puts "\007"  # Ring a bell.
-sleep(1)
-puts "\007"  # Ring a bell.
-sleep(1)
-puts "\007"  # Ring a bell.
-puts "\007"  # Ring a bell.
-puts "\007"  # Ring a bell.
-puts "\007"  # Ring a bell.
+# Audible alert.  Yeah, it's goofy, but handy for testing.  Ditch it if you don't like it.
+bell()  # Ring a bell.
 
-pause_secs=5
-puts progname+' exiting in '+pause_secs.to_s+' seconds...'
+
+
+pause_secs=4
+puts progname+' Logging off in '+pause_secs.to_s+' seconds...'
 #
 #
 #
@@ -877,11 +1222,25 @@ sleep(pause_secs)  # To make sure things have settled down.
 browser.goto 'https://customer.comcast.com/LogOut/logout.aspx'
 sleep(pause_secs)
 
+
+
+puts progname+' Closing browser in '+pause_secs.to_s+' seconds...'
+sleep(pause_secs)
 browser.close
 
-puts progname+' ended'
-
-exit
 
 
+end_time=Time.now
+puts       "#{progname} ending: #{end_time}"
+summary += "#{progname} ended:  #{end_time}\n"
 
+
+# Print the summary string we've been building up.
+puts "\n"
+puts "####SUMMARY####\n"
+puts "\n"
+puts summary
+puts "\n"
+
+
+__END__

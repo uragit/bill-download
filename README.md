@@ -31,7 +31,7 @@ General notes:
 Websites for which this project has working programs for downloading bills:
 
 
-pge.com: (Pacific Gas and Electric, Norther California Utility Company)
+pge.com: (Pacific Gas and Electric, Northern California Utility Company)
 ------------
 
 pge_watir.rb
@@ -43,8 +43,23 @@ brower setup is needed.  Edit pge.conf with your credentials and location of dow
 directory.  Run pge_watir.rb and have at it.
 
 
+nvenergy.com: (NV Energy, Nevada Utility Company)
+------------
 
-comcast.com: (Cable ISP in SF Bay)
+nvenergy_watir.rb
+
+nvenergy.conf
+
+Make sure you have ruby, with the watir (`http://watir.com`) drivers.  A working chrome 
+brower setup is needed.  Edit nvenergy.conf with your credentials and location of download 
+directory.  Run nvenergy_watir.rb and have at it.
+
+Probably only works for accounts in northern Nevada.
+
+
+
+
+comcast.com: (Cable TV/phone/internet ISP in SF Bay)
 ------------
 
 comcast_watir.rb
@@ -53,7 +68,10 @@ comcast.conf
 
 Make sure you have ruby, with the watir (`http://watir.com`) drivers.  A working chrome 
 brower setup is needed.  Edit comcast.conf with your credentials and location of download 
-directory.  Run comcast_watir.rb and have at it.
+directory.  Run comcast_watir.rb and have at it.   The program will download statements,
+voicemail, usage.
+
+
 
 
 
@@ -90,4 +108,54 @@ account.  It's possible that, even if you have an AT&T account, that
 your account may be kept on a different billing/web system and so this
 script may not work for you.  If you've got AT&T's Uverse service,
 it's even less likely to be successful.
+
+
+
+chase.com: (USA credit card provider)
+---------------
+
+chase_watir.rb
+
+chase.conf
+
+Make sure you have ruby, with the watir (`http://watir.com`) drivers.  A working chrome 
+brower setup is needed.  Edit chase.conf with your credentials and location of download 
+directory.  Run chase_watir.rb and have at it.
+
+Chase provides a variety of financial products, but this program only downloads
+credit card statements.
+
+
+
+cigna.com: (USA credit card provider)
+---------------
+
+cigna.rb
+
+cigna.conf
+
+Make sure you have ruby, with the watir (`http://watir.com`) drivers.  A working chrome 
+brower setup is needed.  Edit cigna.conf with your credentials and location of download 
+directory.  Run cigna.rb and have at it.
+
+
+
+
+wellsfargo.com: (USA mortgage provider)
+---------------
+
+wellsfargo_mortgage.rb
+
+wellsfargo_mortgage.conf
+
+Make sure you have ruby, with the watir (`http://watir.com`) drivers.
+A working chrome brower setup is needed.  Edit
+wellsfargo_mortgage.conf with your credentials and location of
+download directory.  Run wellsfargo_mortgage.rb and have at it.
+
+Wells Fargo is more well known for providing regular banking services.
+My only interaction with them concerns mortgages so the code is written
+to pull mortgage statements.  Your mileage may vary.
+
+
 
